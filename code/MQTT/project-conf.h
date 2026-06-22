@@ -1,0 +1,14 @@
+#ifndef PROJECT_CONF_H_
+#define PROJECT_CONF_H_
+
+#undef UIP_CONF_BUFFER_SIZE
+#define UIP_CONF_BUFFER_SIZE 512
+#define QUEUEBUF_CONF_NUM 8
+
+/* Abilitiamo lo stack TCP, FONDAMENTALE per MQTT */
+#define UIP_CONF_TCP 1
+#define UIP_CONF_MAX_CONNECTIONS 2
+#define UIP_CONF_TCP_MSS 128
+#define MQTT_MAX_PACKET_SIZE 256
+
+#endif /* PROJECT_CONF_H_ */
