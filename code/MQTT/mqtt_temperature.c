@@ -19,7 +19,7 @@
 #define BROKER_PORT 1883
 
 #define CLIENT_ID "nRF52840-Temperature"
-#define TOPIC_TEMPERATURE "rete/temperature"
+#define TOPIC_TEMPERATURE "network/temperature"
 
 #define APP_BUFFER_SIZE 128
 static char app_buffer[APP_BUFFER_SIZE];

@@ -27,9 +27,9 @@
 #define COAP_POWER_IP "coap://[fd00::202:2:2:2]:5683"
 #define COAP_IRR_IP   "coap://[fd00::203:3:3:3]:5683"
 
-#define TOPIC_METEO    "rete/meteo"
-#define TOPIC_COMANDI  "rete/comandi/batteria"
-#define TOPIC_ALLARMI  "rete/allarmi"
+#define TOPIC_METEO    "network/temperature"
+#define TOPIC_COMANDI  "network/commands/battery"
+#define TOPIC_ALLARMI  "network/allarmi"
 
 #define APP_BUFFER_SIZE 128
 static char app_buffer[APP_BUFFER_SIZE];

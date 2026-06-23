@@ -18,8 +18,8 @@
 #define BROKER_PORT 1883
 
 #define CLIENT_ID "nRF52840-Battery"
-#define TOPIC_BATTERY "rete/batteria"
-#define TOPIC_COMMANDS "rete/commands/batteria" 
+#define TOPIC_BATTERY "network/battery"
+#define TOPIC_COMMANDS "network/commands/battery" 
 
 #define APP_BUFFER_SIZE 128
 static char app_buffer[APP_BUFFER_SIZE];
