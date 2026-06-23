@@ -205,8 +205,8 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
           snprintf(app_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
           mqtt_publish(&conn, NULL, TOPIC_COMANDI, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
           
-          snprintf(app_buffer, APP_BUFFER_SIZE, "{\"allarme\":\"Possibile crollo potenza rilevato\"}");
-          mqtt_publish(&conn, NULL, TOPIC_ALLARMI, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+          // snprintf(app_buffer, APP_BUFFER_SIZE, "{\"allarme\":\"Possibile crollo potenza rilevato\"}");
+          // mqtt_publish(&conn, NULL, TOPIC_ALLARMI, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
         } else {
           /* SISTEMA STABILE */
           leds_on(LEDS_GREEN);
