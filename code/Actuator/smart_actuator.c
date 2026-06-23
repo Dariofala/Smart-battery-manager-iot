@@ -202,7 +202,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
           /* CROLLO IMMINENTE */
           leds_on(LEDS_RED);
           leds_off(LEDS_GREEN);
-          snprintf(app_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"scarica\"}");
+          snprintf(app_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
           mqtt_publish(&conn, NULL, TOPIC_COMANDI, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
           
           snprintf(app_buffer, APP_BUFFER_SIZE, "{\"allarme\":\"Possibile crollo potenza rilevato\"}");
@@ -211,7 +211,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
           /* SISTEMA STABILE */
           leds_on(LEDS_GREEN);
           leds_off(LEDS_RED);
-          snprintf(app_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"carica\"}");
+          snprintf(app_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"charge\"}");
           mqtt_publish(&conn, NULL, TOPIC_COMANDI, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
         }
       }
@@ -221,7 +221,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
         LOG_INFO("SAFE MODE ON:Invio comandi di scarica al Sensore Batteria.\n");
         leds_on(LEDS_RED);
         leds_off(LEDS_GREEN);
-        snprintf(app_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"scarica\"}");
+        snprintf(app_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
         mqtt_publish(&conn, NULL, TOPIC_COMANDI, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
       }
 
