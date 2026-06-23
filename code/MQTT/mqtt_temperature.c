@@ -34,6 +34,10 @@ static char app_buffer[APP_BUFFER_SIZE];
 static float last_published_temp = -100.0; // Dummy initialization to force the 1st transmission
 static int current_step = 0;
 
+/* Contatore per l'Heartbeat */
+static int cycles_without_publish = 0;
+#define MAX_IDLE_CYCLES 3  /* 3 cicli da 15s = 45 secondi massimi di silenzio */
+
 // MQTT Connection Structure and State Machine
 static struct mqtt_connection conn;
 static mqtt_status_t status;
@@ -123,21 +127,26 @@ PROCESS_THREAD(mqtt_temperature_process, ev, data)
       float current_temp = module_temp_array[current_step]; // Read temperature
       
       // Check if a significant change occurred
-      if(fabs(current_temp - last_published_temp) >= TEMP_THRESHOLD) { 
-        
-        /* JSON payload creation */
+      if(fabs(current_temp - last_published_temp) >= TEMP_THRESHOLD || cycles_without_publish >= MAX_IDLE_CYCLES) {
+        // JSON payload creation
         snprintf(app_buffer, APP_BUFFER_SIZE, 
                  "{\"bn\":\"%s\", \"n\":\"module_temp\", \"v\":%.2f, \"u\":\"Cel\"}", 
                  CLIENT_ID, current_temp);
         
-        LOG_INFO("Variation (> %.1f C). Publishing: %s\n", TEMP_THRESHOLD, app_buffer);
+        if(cycles_without_publish >= MAX_IDLE_CYCLES) {
+            LOG_INFO("Security Heartbeat (45s), Publishing: %s\n", app_buffer);
+        } else {
+            LOG_INFO("Variation (> %.1f C). Publishing: %s\n", TEMP_THRESHOLD, app_buffer);
+        }
         
-        // Asynchronous publication on the temperature topic with QoS 0
         mqtt_publish(&conn, NULL, TOPIC_TEMPERATURE, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
         
         last_published_temp = current_temp;
+        cycles_without_publish = 0; /* Reset the counter because we just published */
+        
       } else {
-        LOG_INFO("Step %d - Temp: %.2f C (Unchanged). Radio sleeping.\n", current_step, current_temp);
+        cycles_without_publish++; /* Increase the counter of silences */
+        LOG_INFO("Step %d - Temp: %.2f C (Unchanged). Silence n.%d. Radio on sleep mode.\n", current_step, current_temp, cycles_without_publish);
       }
 
       current_step++;

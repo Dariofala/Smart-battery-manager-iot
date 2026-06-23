@@ -46,6 +46,8 @@ static float current_temp = 0.0;
 
 static bool first_cycle_done = false;
 static uint32_t last_temp_timestamp = 0;
+static uint32_t last_power_timestamp = 0;
+static uint32_t last_irr_timestamp = 0;
 #define SAFE_MODE_TIMEOUT (60 * CLOCK_SECOND)
 
 /* Strutture MQTT e CoAP */
@@ -61,6 +63,7 @@ static coap_observee_t *obs_irr;
 #define STATE_CONNECTED    2
 #define STATE_SUBSCRIBING  3
 #define STATE_SUBSCRIBED   4
+#define STATE_DISCONNECTED 5
 
 static uint8_t mqtt_state = STATE_INIT;
 
@@ -83,6 +86,7 @@ static void notification_callback_power(coap_observee_t *obs, void *notification
     coap_get_payload(notification, &payload);
     current_power = extract_json_value((const char *)payload);
     LOG_INFO("CoAP RX Potenza: %.2f W\n", current_power);
+    last_power_timestamp = clock_time();
   }
 }
 
@@ -92,6 +96,7 @@ static void notification_callback_irr(coap_observee_t *obs, void *notification, 
     coap_get_payload(notification, &payload);
     current_irr = extract_json_value((const char *)payload);
     LOG_INFO("CoAP RX Irraggiamento: %.4f W/m2\n", current_irr);
+    last_irr_timestamp = clock_time();
   }
 }
 
@@ -101,6 +106,10 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
     case MQTT_EVENT_CONNECTED:
       LOG_INFO("MQTT Connesso!\n");
       mqtt_state = STATE_CONNECTED;
+      break;
+    case MQTT_EVENT_DISCONNECTED:
+      LOG_WARN("!!! Disconnesso dal Broker MQTT. Avvio Auto-Recovery... !!!\n");
+      mqtt_state = STATE_DISCONNECTED;
       break;
     case MQTT_EVENT_SUBACK:
       LOG_INFO("Iscrizione a meteo completata.\n");
@@ -155,7 +164,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
     /* GESTIONE RETE MQTT E COAP OBSERVE */
     if(have_connectivity()) {
       
-      if(mqtt_state == STATE_INIT) {
+      if(mqtt_state == STATE_INIT || mqtt_state == STATE_DISCONNECTED) {
         LOG_INFO("Connessione MQTT e Avvio CoAP Observe...\n");
         status = mqtt_connect(&conn, BROKER_IP, BROKER_PORT, 60, MQTT_CLEAN_SESSION_ON);
         if(status != MQTT_STATUS_OUT_QUEUE_FULL) {
@@ -172,6 +181,17 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
       }
     }
 
+    /* 2. Gestione Indipendente CoAP (Sganciata da MQTT) */
+    if(obs_power == NULL) {
+      LOG_INFO("Avvio/Ripristino Observe CoAP Potenza...\n");
+      obs_power = coap_obs_request_registration(&ep_power, "telemetria/potenza", notification_callback_power, NULL);
+    }
+    
+    if(obs_irr == NULL) {
+      LOG_INFO("Avvio/Ripristino Observe CoAP Irraggiamento...\n");
+      obs_irr = coap_obs_request_registration(&ep_irr, "telemetria/irraggiamento", notification_callback_irr, NULL);
+    }
+
     /* --- IL CUORE: LOGICA DI CONTROLLO AI E SAFE MODE --- */
     if(mqtt_state == STATE_SUBSCRIBED) {
       
@@ -182,7 +202,22 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
         LOG_WARN("!!! SAFE MODE ATTIVATA !!! Timeout sensore meteo.\n");
         is_safe_mode = true;
       }
-
+      if ((clock_time() - last_power_timestamp) > SAFE_MODE_TIMEOUT && last_power_timestamp != 0) {
+        LOG_WARN("!!! SAFE MODE ATTIVATA !!! Timeout sensore potenza.\n");
+        is_safe_mode = true;
+        if (obs_power != NULL) {
+          coap_obs_remove_observee(obs_power); /* Elimina la vecchia sessione morta */
+          obs_power = NULL;                    /* Triggera la riconnessione automatica al prossimo ciclo */
+        }
+      }
+      if ((clock_time() - last_irr_timestamp) > SAFE_MODE_TIMEOUT && last_irr_timestamp != 0) {
+        LOG_WARN("!!! SAFE MODE ATTIVATA !!! Timeout sensore irraggiamento.\n");
+        is_safe_mode = true;
+        if (obs_irr != NULL) {
+          coap_obs_remove_observee(obs_irr);
+          obs_irr = NULL;
+        }
+      }
       /* 2. Esecuzione TinyML (Solo se abbiamo i dati storici dal primo ciclo) */
       if(first_cycle_done && !is_safe_mode) {
         
