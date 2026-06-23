@@ -4,22 +4,22 @@
 #include "net/ipv6/uip.h"
 #include "sys/etimer.h"
 #include "sys/log.h"
-#include "dev/leds.h" /* Nuova libreria per controllare i LED */
+#include "dev/leds.h"
 
 #include <math.h> 
 #include <string.h>
 #include <stdio.h>
 
-#define LOG_MODULE "Sensore MQTT (Batteria)"
+#define LOG_MODULE "Sensore MQTT (Battery)"
 #define LOG_LEVEL LOG_LEVEL_INFO
 
-/* --- CONFIGURAZIONI MQTT --- */
+//  MQTT CONFIGURATIONS
 #define BROKER_IP "fd00::1" 
 #define BROKER_PORT 1883
 
 #define CLIENT_ID "nRF52840-Battery"
-#define TOPIC_BATTERIA "rete/batteria"
-#define TOPIC_COMANDI "rete/comandi/batteria" /* Il topic dove ascoltiamo l'Attuatore */
+#define TOPIC_BATTERY "rete/batteria"
+#define TOPIC_COMMANDS "rete/commands/batteria" 
 
 #define APP_BUFFER_SIZE 128
 static char app_buffer[APP_BUFFER_SIZE];
@@ -27,17 +27,16 @@ static char app_buffer[APP_BUFFER_SIZE];
 
 #define SAMPLING_INTERVAL (15 * CLOCK_SECOND)
 
-/* --- LOGICA BATTERIA E STATO FISICO --- */
+// BATTERY LOGIC AND PHYSICAL STATE
 #define SOC_THRESHOLD 1.0
-static float current_soc = 100.0; /* Iniziamo col 100% di carica */
+static float current_soc = 100.0; // Start with 100% charge
 static float last_published_soc = -100.0; 
-static bool is_charging = true;   /* Flag per determinare se carica o scarica */
+static bool is_charging = true;   // Flag to determine charging or discharging state */
 
-/* Struttura MQTT */
+// MQTT Connection Structure and State Machine
 static struct mqtt_connection conn;
 static mqtt_status_t status;
 
-/* Macchina a Stati ampliata per supportare la Subscribe */
 #define STATE_INIT         0
 #define STATE_CONNECTING   1
 #define STATE_CONNECTED    2
@@ -50,42 +49,42 @@ static uint8_t state = STATE_INIT;
 PROCESS(mqtt_battery_process, "MQTT Battery Process");
 AUTOSTART_PROCESSES(&mqtt_battery_process);
 
-/* Callback MQTT */
+// MQTT Callback
 static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data) {
   switch(event) {
     case MQTT_EVENT_CONNECTED:
-      LOG_INFO("Connessione TCP/MQTT stabilita!\n");
+      LOG_INFO("TCP/MQTT connection established!\n");
       state = STATE_CONNECTED;
       break;
     
     case MQTT_EVENT_DISCONNECTED:
-      LOG_WARN("Disconnesso dal Broker MQTT.\n");
+      LOG_WARN("Disconnected from the MQTT Broker.\n");
       state = STATE_DISCONNECTED;
       break;
     
     case MQTT_EVENT_SUBACK:
-      LOG_INFO("Iscrizione confermata al topic dei comandi.\n");
+      LOG_INFO("Subscription confirmed to the commands topic.\n");
       state = STATE_SUBSCRIBED;
       break;
     
     case MQTT_EVENT_PUBACK:
-      LOG_INFO("Messaggio pubblicato (PUBACK ricevuto).\n");
+      LOG_INFO("Message published successfully (PUBACK received).\n");
       break;
 
-    /* EVENTO CRITICO: Ricezione di un messaggio dal topic sottoscritto */
+    // Received a message from the subscribed topic */
     case MQTT_EVENT_PUBLISH: {
       struct mqtt_message *msg = data;
       char payload[32];
       
-      /* Copiamo il payload in modo sicuro per fare il parsing testuale */
+      // Safely copy the payload to perform text parsing
       snprintf(payload, sizeof(payload), "%.*s", msg->payload_length, (char *)msg->payload_chunk);
       
-      if(strstr(payload, "scarica") != NULL) {
+      if(strstr(payload, "discharge") != NULL) {
         is_charging = false;
-        LOG_INFO("=== COMANDO RICEVUTO: INIZIO SCARICA ===\n");
-      } else if(strstr(payload, "carica") != NULL) {
+        LOG_INFO("COMMAND RECEIVED: START DISCHARGE\n");
+      } else if(strstr(payload, "charge") != NULL) {
         is_charging = true;
-        LOG_INFO("=== COMANDO RICEVUTO: INIZIO CARICA ===\n");
+        LOG_INFO("COMMAND RECEIVED: START CHARGE\n");
       }
       break;
     }
@@ -96,9 +95,7 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
 }
 
 static bool have_connectivity(void) {
-  if(uip_ds6_get_global(ADDR_PREFERRED) == NULL || uip_ds6_defrt_choose() == NULL) {
-    return false;
-  }
+  if(uip_ds6_get_global(ADDR_PREFERRED) == NULL || uip_ds6_defrt_choose() == NULL) { return false; }
   return true;
 }
 
@@ -109,9 +106,12 @@ PROCESS_THREAD(mqtt_battery_process, ev, data)
 
   PROCESS_BEGIN();
 
-  LOG_INFO("Avvio Sensore MQTT (Batteria Interattiva)...\n");
+  LOG_INFO("Starting MQTT Sensor (Interactive Battery)...\n");
 
+  // Register the MQTT Client by assigning its name and callback 
   mqtt_register(&conn, &mqtt_battery_process, CLIENT_ID, mqtt_event, MAX_TCP_SEGMENT_SIZE);
+
+  // Convert the IP string into a uip_ipaddr_t structure
   uiplib_ipaddrconv(BROKER_IP, &broker_address);
 
   etimer_set(&timer, SAMPLING_INTERVAL);
@@ -119,35 +119,40 @@ PROCESS_THREAD(mqtt_battery_process, ev, data)
   while(1) {
     PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&timer));
 
+    // MQTT STATE MACHINE
+
+    // STATE_INIT or STATE_DISCONNECTED
     if(state == STATE_INIT || state == STATE_DISCONNECTED) {
       if(have_connectivity()) {
         state = STATE_CONNECTING;
       } else {
-        LOG_INFO("Attesa di instradamento RPL...\n");
+        LOG_INFO("Waiting for RPL routing towards the Border Router...\n");
       }
     }
 
+    // STATE_CONNECTING
     if(state == STATE_CONNECTING) {
-      LOG_INFO("Tentativo di connessione al Broker [%s]:%d\n", BROKER_IP, BROKER_PORT);
+      LOG_INFO("Attempting connection to Broker [%s]:%d\n", BROKER_IP, BROKER_PORT);
+      // Connect with calculated Keep Alive and Clean Session parameters
       status = mqtt_connect(&conn, BROKER_IP, BROKER_PORT,
                             (SAMPLING_INTERVAL * 3) / CLOCK_SECOND,
                             MQTT_CLEAN_SESSION_ON);
       if(status == MQTT_STATUS_OUT_QUEUE_FULL) {
-        LOG_ERR("Coda di rete piena. Riprovo più tardi...\n");
+        LOG_ERR("Network queue is full. Retrying later...\n");
       }
     }
 
-    /* Subito dopo la connessione, ci iscriviamo per ascoltare l'Attuatore */
+    // STATE_CONNECTED
     if(state == STATE_CONNECTED) {
-      LOG_INFO("Invio richiesta di Subscribe a %s\n", TOPIC_COMANDI);
-      mqtt_subscribe(&conn, NULL, TOPIC_COMANDI, MQTT_QOS_LEVEL_0);
-      state = STATE_SUBSCRIBING; /* Aspettiamo il SUBACK dalla callback */
+      LOG_INFO("Sending Subscribe request to %s\n", TOPIC_COMMANDS);
+      mqtt_subscribe(&conn, NULL, TOPIC_COMMANDS, MQTT_QOS_LEVEL_0);
+      state = STATE_SUBSCRIBING; // Wait for the SUBACK from the callback
     }
 
-    /* Flusso di lavoro a regime */
+    // STATE_SUBSCRIBED
     if(state == STATE_SUBSCRIBED) {
       
-      /* 1. ESECUZIONE DELLA MATEMATICA E CLIPPING FISICO */
+      // Math execution
       if(is_charging) {
         current_soc += 1.5;
         if(current_soc >= 100.0) {
@@ -160,34 +165,34 @@ PROCESS_THREAD(mqtt_battery_process, ev, data)
         }
       }
 
-      /* 2. GESTIONE DEI LED (Feedback Visivo in Cooja) */
-      leds_off(LEDS_ALL); /* Spegniamo i vecchi led */
+      // Led menagement
+      leds_off(LEDS_ALL); // Turn leds off
       
       if(is_charging) {
         if(current_soc >= 100.0) {
-          leds_set(LEDS_NUM_TO_MASK(LEDS_GREEN)); /* Carica al 100% -> Verde */
+          leds_set(LEDS_NUM_TO_MASK(LEDS_GREEN)); // 100% Charge -> Green
         } else {
-          leds_on(LEDS_BLUE);  /* In ricarica -> Blu (o equivalente) */
+          leds_set(LEDS_NUM_TO_MASK(LEDS_BLUE));  // Charging -> Blue/
         }
       } else {
         if(current_soc <= 20.0) {
-          leds_on(LEDS_RED);   /* Sotto il 20% in scarica -> Emergenza Rosso */
+          leds_on(LEDS_RED);    // Below 20% discharging -> Red
         } else {
-          leds_on(LEDS_YELLOW);/* In scarica normale -> Giallo */
+          leds_on(LEDS_YELLOW); // Normal discharging -> Yellow
         }
       }
 
-      /* 3. PUBBLICAZIONE AL CLOUD/GRAFANA */
+      // Publication to CLoud
       if(fabs(current_soc - last_published_soc) >= SOC_THRESHOLD) {
         
         snprintf(app_buffer, APP_BUFFER_SIZE, 
                  "{\"bn\":\"%s\", \"n\":\"battery_soc\", \"v\":%.1f, \"u\":\"%%\"}", 
                  CLIENT_ID, current_soc);
         
-        LOG_INFO("Stato: %.1f%% (%s). Pubblico su %s\n", 
-                 current_soc, is_charging ? "Carica" : "Scarica", TOPIC_BATTERIA);
+        LOG_INFO("State: %.1f%% (%s). Publishing to %s\n", 
+                 current_soc, is_charging ? "Charge" : "Discharge", TOPIC_BATTERY);
         
-        mqtt_publish(&conn, NULL, TOPIC_BATTERIA, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+        mqtt_publish(&conn, NULL, TOPIC_BATTERY, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
         
         last_published_soc = current_soc;
       }
