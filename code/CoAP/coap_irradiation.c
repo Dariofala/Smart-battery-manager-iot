@@ -5,54 +5,49 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Includiamo il dataset simulato */
-#include "dataset_replay.h"
+#include "dataset_replay.h" // include the dataset
 
-#define LOG_MODULE "Sensore CoAP (Irr)"
+#define LOG_MODULE "Sensore CoAP (Irradiation)"
 #define LOG_LEVEL LOG_LEVEL_INFO
 
-/* Intervallo di campionamento simulato: 10 secondi */
+// Time between each sample
 #define SAMPLING_INTERVAL (10 * CLOCK_SECOND)
 
+// Global index to iterate through the dataset array
 static int current_step = 0;
 
-/* Prototipi degli handler per la risorsa */
+// OBSERVABLE RESOURCE DEFINITION (CoAP Observe)
+
+// Resource handler prototypes
 static void res_get_handler(coap_message_t *request, coap_message_t *response, uint8_t *buffer, uint16_t preferred_size, int32_t *offset);
 static void res_event_handler(void);
 
-/* Definizione della risorsa Observe */
-EVENT_RESOURCE(res_irraggiamento,
-               "title=\"Irraggiamento Solare\";obs",
-               res_get_handler,
-               NULL,
-               NULL,
-               NULL,
-               res_event_handler);
+// Observe resource definition
+EVENT_RESOURCE(res_irraggiamento, "title=\"Irraggiamento Solare\";obs", res_get_handler, NULL, NULL, NULL, res_event_handler);
 
-/* Handler per il trigger dell'evento (notifica gli iscritti) */
+// Event handler: called when we execute res_irraggiamento.trigger()
 static void res_event_handler(void) {
   coap_notify_observers(&res_irraggiamento);
 }
 
-/* Handler per la GET / Observe (costruisce il payload JSON) */
+// GET handler: builds the JSON payload to be sent
 static void res_get_handler(coap_message_t *request, coap_message_t *response, uint8_t *buffer, uint16_t preferred_size, int32_t *offset) {
   
   float current_irradiation = irradiation_array[current_step];
 
-  /* Formattazione JSON. Usiamo %.4f perché l'irraggiamento ha 4 decimali nel dataset */
+  //JSON formatting --> it uses %.4f because irradiation has 4 decimals in the dataset
   snprintf((char *)buffer, preferred_size, 
-           "{\"bn\":\"nRF52840-SensoreIrr\", \"n\":\"irradiation\", \"v\":%.4f, \"u\":\"W/m2\"}", 
+           "{\"bn\":\"nRF52840-SensorIrr\", \"n\":\"irradiation\", \"v\":%.4f, \"u\":\"W/m2\"}", 
            current_irradiation);
 
   size_t len = strlen((char *)buffer);
   
+  // Set the CoAP header to indicate the content is JSON
   coap_set_header_content_format(response, APPLICATION_JSON);
   coap_set_payload(response, buffer, len);
 }
 
-/* =========================================================================== */
-/* PROCESSO PRINCIPALE DEL SENSORE                                             */
-/* =========================================================================== */
+// MAIN SENSOR PROCESS
 
 PROCESS(coap_irradiation_process, "CoAP Irradiation Process");
 AUTOSTART_PROCESSES(&coap_irradiation_process);
@@ -63,11 +58,11 @@ PROCESS_THREAD(coap_irradiation_process, ev, data)
 
   PROCESS_BEGIN();
 
-  LOG_INFO("Avvio Sensore CoAP (Irraggiamento)...\n");
+  LOG_INFO("Starting CoAP Sensor (Irradiation)...\n");
 
   coap_engine_init();
 
-  /* Colleghiamo la risorsa all'URI corretto */
+  // Bind the resource to the URI "/telemetria/irraggiamento"
   coap_activate_resource(&res_irraggiamento, "telemetria/irraggiamento");
 
   etimer_set(&timer, SAMPLING_INTERVAL);
@@ -77,12 +72,12 @@ PROCESS_THREAD(coap_irradiation_process, ev, data)
 
     current_step++;
     if(current_step >= REPLAY_STEPS) {
-      current_step = 0; /* Riavvolge il dataset al termine dei 50 step */
+      current_step = 0; //  Rewind the dataset at the end of the 50 steps
     }
 
-    LOG_INFO("Campionamento simulato: Step %d, Valore: %.4f W/m2\n", current_step, irradiation_array[current_step]);
-
-    /* Scatena la notifica Observe verso il Cloud / Attuatore */
+    LOG_INFO("Simulated sampling: Step %d, Value: %.4f W/m2\n", current_step, irradiation_array[current_step]);
+    
+    // Trigger the CoAP event. This single line implements the entire Observe pattern towards the Actuator/Cloud
     res_irraggiamento.trigger();
 
     etimer_reset(&timer);
