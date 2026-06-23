@@ -170,9 +170,6 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
         if(status != MQTT_STATUS_OUT_QUEUE_FULL) {
           mqtt_state = STATE_CONNECTING;
         }
-        /* Avvio Observe CoAP */
-        obs_power = coap_obs_request_registration(&ep_power, "telemetria/potenza", notification_callback_power, NULL);
-        obs_irr = coap_obs_request_registration(&ep_irr, "telemetria/irraggiamento", notification_callback_irr, NULL);
       }
 
       if(mqtt_state == STATE_CONNECTED) {
@@ -239,9 +236,10 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
           leds_off(LEDS_GREEN);
           snprintf(app_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
           mqtt_publish(&conn, NULL, TOPIC_COMANDI, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
-          
-          // snprintf(app_buffer, APP_BUFFER_SIZE, "{\"allarme\":\"Possibile crollo potenza rilevato\"}");
-          // mqtt_publish(&conn, NULL, TOPIC_ALLARMI, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+          /*
+          snprintf(app_buffer, APP_BUFFER_SIZE, "{\"allarme\":\"Possibile crollo potenza rilevato\"}");
+          mqtt_publish(&conn, NULL, TOPIC_ALLARMI, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+          */
         } else {
           /* SISTEMA STABILE */
           leds_on(LEDS_GREEN);
