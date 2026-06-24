@@ -161,6 +161,7 @@ async def main():
     print("  Starting Smart Battery Manager - Cloud App      ")
     print("==================================================\n")
 
+
     # 1. MQTT Client Initialization
     mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)   
     mqtt_client.on_connect = on_connect
@@ -172,6 +173,7 @@ async def main():
         mqtt_client.loop_start() 
     except ConnectionRefusedError:
         print("[ERROR] Local MQTT broker not found. Ensure Mosquitto is running.")
+
 
     # 2. CoAP Server Initialization
     root = resource.Site()
@@ -185,16 +187,47 @@ async def main():
     await aiocoap.Context.create_server_context(root, bind=("::", 5683))
     print("[CoAP] Server listening on standard port 5683...\n")
 
-    # 3. Application Keep-Alive
-    # An asynchronous infinite loop that keeps the CoAP server active
+
+    # 3. CLI - Command Line Interface (User Logic)
+    print("\n--- COMMAND LINE INTERFACE (CLI) ACTIVE ---")
+    print("Type one of the following commands and press Enter:")
+    print(" - 'alarm' : Simulates a power collapse")
+    # print(" - 'stress' : Simulates a stress test")
+    print(" - 'exit'  : Shuts down the system")
+    print("-------------------------------------------\n")
+
+    # Update this topic if your C actuator subscribes to a different one
+    ALARM_TOPIC = "network/alarms" 
+
     try:
         while True:
-            await asyncio.sleep(3600)
+            # Wait for user input asynchronously (does not block CoAP operations)
+            command = await asyncio.to_thread(input, "")
+            command = command.strip().lower()
+
+            if command == "alarm":
+                payload = json.dumps({"alarm": "Simulating Power collapse"})
+                mqtt_client.publish(ALARM_TOPIC, payload)
+                print(f"> [CLI] Sent MQTT ALARM: {payload} on topic {ALARM_TOPIC}\n")
+
+           #  if command == "stress":
+           #      ...
+           #      print(f"> [CLI] Sent MQTT STRESS: {payload} on topic {ACTUATOR_TOPIC}\n")
+
+            elif command == "exit":
+                print("> [SYSTEM] Shutdown requested by user...")
+                break # Exits the infinite loop and triggers the finally block
+
+            elif command != "":
+                print("> [CLI] Command not recognized. Use: alarm, exit.\n")
+
     except asyncio.CancelledError:
         print("\n[SYSTEM] Shutting down application...")
+    
     finally:
         mqtt_client.loop_stop()
         mqtt_client.disconnect()
+        client_db.close()
 
 if __name__ == "__main__":
     # Start the asyncio Event Loop
