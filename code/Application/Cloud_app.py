@@ -143,7 +143,7 @@ async def main():
     print("==================================================\n")
 
     # 1. MQTT Client Initialization
-    mqtt_client = mqtt.Client()
+    mqtt_client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)    
     mqtt_client.on_connect = on_connect
     mqtt_client.on_message = on_message
     
