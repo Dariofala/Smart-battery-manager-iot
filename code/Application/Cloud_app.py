@@ -10,7 +10,8 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 
 # INFLUXDB CONFIGURATION (REMEMBER TO CHANGE the Token)
 INFLUX_URL = "http://localhost:8086"
-INFLUX_TOKEN = "bSFIYhrvYaYcQxs1PuexIvAkiEaxIHYLxGXaWN6lM_A2cGE7Pib4fa4Y5qx9QeTrV7HQHQY--6L8CbYKc3ppEQ=="
+INFLUX_TOKEN = "bSFIYhrvYaYcQxs1PuexIvAkiEaxIHYLxGXaWN6lM_A2cGE7Pib4fa4Y5qx9QeTrV7HQHQY--6L8CbYKc3ppEQ==" # Dario
+# INFLUX_TOKEN = "CibkW1KsPOOP7IHmaFHi4dteByZrsU1tgGBr3cpF9by58oulcTUjkWJ_2qGwBHyajJWq4_4BKajKis_KjTevuQ==" # Leo
 INFLUX_ORG = "myorg"
 INFLUX_BUCKET = "sensors"
 
