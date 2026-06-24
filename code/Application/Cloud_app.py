@@ -4,18 +4,18 @@ import paho.mqtt.client as mqtt
 import aiocoap
 import aiocoap.resource as resource
 
-# InfluxDB Imports (Uncomment after installing influxdb-client)
-# from influxdb_client import InfluxDBClient, Point
-# from influxdb_client.client.write_api import SYNCHRONOUS
+# InfluxDB Imports
+from influxdb_client import InfluxDBClient, Point
+from influxdb_client.client.write_api import SYNCHRONOUS
 
-# INFLUXDB CONFIGURATION (To be filled)
+# INFLUXDB CONFIGURATION (REMEMBER TO CHANGE the Token)
 INFLUX_URL = "http://localhost:8086"
-INFLUX_TOKEN = "INSERT_YOUR_TOKEN_HERE"
-INFLUX_ORG = "unipi"
-INFLUX_BUCKET = "smart_battery_db"
+INFLUX_TOKEN = "bSFIYhrvYaYcQxs1PuexIvAkiEaxIHYLxGXaWN6lM_A2cGE7Pib4fa4Y5qx9QeTrV7HQHQY--6L8CbYKc3ppEQ=="
+INFLUX_ORG = "myorg"
+INFLUX_BUCKET = "sensors"
 
-# client_db = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
-# write_api = client_db.write_api(write_options=SYNCHRONOUS)
+client_db = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
+write_api = client_db.write_api(write_options=SYNCHRONOUS)
 
 # MODULE 1: MQTT MANAGEMENT (Background Thread)
 def on_connect(client, userdata, flags, rc, properties):
@@ -40,13 +40,13 @@ def on_message(client, userdata, msg):
             print(f"[MQTT TELEMETRY] Topic: {topic} | {device} -> {measurement}: {value} {unit}")
             
             # INFLUXDB WRITE (Uncomment when ready)
-            # point = Point("iot_sensors") \
-            #     .tag("device", device) \
-            #     .tag("measurement_type", measurement) \
-            #     .field("value", value)
-            # write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
+            point = Point("iot_sensors") \
+                .tag("device", device) \
+                .tag("measurement_type", measurement) \
+                .field("value", value)
+            write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
             
-        # Parsing Alarms from the Smart Actuator
+        # Parsing Alarms from the Smart Actuator (MODIFICARE PER RIMUOVERE "allarme")
         elif "allarme" in data or "alarm" in data:
             alarm_msg = data.get("alarm", data.get("allarme", "Unknown Alarm"))
             print(f"\n[!!! MQTT ALARM !!!] Detected by Actuator: {alarm_msg}\n")
@@ -81,10 +81,20 @@ async def observe_sensor(client_ip, node_id, node_type):
             payload = response.payload.decode('utf-8')
             
             print(f"[CoAP TELEMETRY] {node_id} ({client_ip}): {payload}")
-            
-            # When you unlock INFLUXDB, the TAG must be the node_id, NOT the IP!
-            # point = Point("iot_sensors").tag("device", node_id).field("value", float(json.loads(payload)["v"]))
-            # write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
+
+            # INFLUXDB WRITE FOR CoAP
+            try:
+                data = json.loads(payload)
+                val = float(data.get("v", 0.0))
+                measurement_name = data.get("n", "unknown")
+                
+                point = Point("iot_sensors") \
+                    .tag("device", node_id) \
+                    .tag("measurement_type", measurement_name) \
+                    .field("value", val)
+                write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
+            except Exception as e:
+                print(f"[CoAP INFLUX ERROR] Failed DB insert for {node_id}: {e}")
             
     except asyncio.TimeoutError:
         print(f"[CoAP TIMEOUT] Sensor {node_id} ({client_ip}) is not responding. It went down!")
