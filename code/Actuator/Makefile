@@ -1,19 +1,20 @@
 # ==============================================================================
-# CONFIGURAZIONE PERCORSO EMLEARN (DA MODIFICARE SU ALTRI PC)
+# EMLEARN PATH CONFIGURATION (TO BE MODIFIED ON OTHER PCs)
 # ==============================================================================
-# Se usi un altro PC, esegui nel terminale: 
+# To use another PC, run in the terminal: 
 # python3 -c "import emlearn; print(emlearn.__path__[0])"
-# e incolla il risultato qui sotto sostituendo questo percorso:
+# and paste the result below replacing this path:
 EMLEARN_PATH = /home/leona/.local/lib/python3.12/site-packages/emlearn
+# EMLEARN_PATH = /opt/anaconda3/lib/python3.13/site-packages/emlearn
 # ==============================================================================
 
 CONTIKI_PROJECT = smart_actuator
 all: $(CONTIKI_PROJECT)
 
-# Risaliamo alla radice di contiki-ng (3 livelli)
+# Path to Contiki-NG root (3 levels up)
 CONTIKI = ../../..
 
-# Includiamo i sottomoduli CoAP e MQTT usando le macro corrette
+# Include CoAP and MQTT submodules using the correct macros
 include $(CONTIKI)/Makefile.dir-variables
 MODULES += $(CONTIKI_NG_APP_LAYER_DIR)/coap
 MODULES += $(CONTIKI_NG_APP_LAYER_DIR)/mqtt
@@ -21,9 +22,12 @@ MODULES += $(CONTIKI_NG_APP_LAYER_DIR)/mqtt
 MODULES_REL += $(EMLEARN_PATH)
 INC += $(EMLEARN_PATH)
 
-# Libreria matematica obbligatoria per emlearn
+# Mandatory math library for emlearn
 TARGET_LIBFILES += -lm
 
 CFLAGS += -Wno-unused-variable -Wno-unused-function
+
+# Disable the transformation of warnings into fatal errors by Contiki-NG
+WERROR = 0
 
 include $(CONTIKI)/Makefile.include
