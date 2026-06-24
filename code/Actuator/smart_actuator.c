@@ -12,34 +12,34 @@
 #include <string.h>
 #include <stdio.h>
 
-/* Inclusione del Modello di Machine Learning */
+/* Machine Learning Model */
 #include "smart_battery_model.h"
 
-#define LOG_MODULE "Attuatore Smart"
+#define LOG_MODULE "Smart Actuator"
 #define LOG_LEVEL LOG_LEVEL_INFO
 
-/* --- CONFIGURAZIONI RETE --- */
+/* --- NETWORK CONFIGURATIONS --- */
 #define BROKER_IP "fd00::1" 
 #define BROKER_PORT 1883
 #define CLIENT_ID "nRF52840-Actuator"
 
-/* Indirizzi dei Sensori CoAP (Verificali su Cooja/Tunslip) */
+/* Addresses of CoAP Sensors */
 #define COAP_POWER_IP "coap://[fd00::202:2:2:2]:5683"
 #define COAP_IRR_IP   "coap://[fd00::203:3:3:3]:5683"
 
-#define TOPIC_METEO    "network/temperature"
-#define TOPIC_COMANDI  "network/commands/battery"
-#define TOPIC_ALLARMI  "network/allarmi"
+#define TOPIC_TEMPERATURE    "network/temperature"
+#define TOPIC_COMMANDS  "network/commands/battery"
+#define TOPIC_ALARMS  "network/alarms"
 
 #define APP_BUFFER_SIZE 128
 static char app_buffer[APP_BUFFER_SIZE];
 #define MAX_TCP_SEGMENT_SIZE 128
 
-/* --- COSTANTI MACHINE LEARNING (Da Python) --- */
+/* --- machine learning features --- */
 static const float FEATURE_MEAN[5]  = { 276.5014f, 276.9828f, 0.2314f, 0.2313f, 32.0125f };
 static const float FEATURE_SCALE[5] = { 380.8638f, 381.0449f, 0.3070f, 0.3065f, 11.8554f };
 
-/* --- VARIABILI DI STATO --- */
+/* --- state variables --- */
 static float current_power = 0.0, prev_power = 0.0;
 static float current_irr = 0.0,   prev_irr = 0.0;
 static float current_temp = 0.0;
@@ -50,7 +50,7 @@ static uint32_t last_power_timestamp = 0;
 static uint32_t last_irr_timestamp = 0;
 #define SAFE_MODE_TIMEOUT (60 * CLOCK_SECOND)
 
-/* Strutture MQTT e CoAP */
+/* MQTT and CoAP Structures */
 static struct mqtt_connection conn;
 static mqtt_status_t status;
 static coap_endpoint_t ep_power;
@@ -70,7 +70,7 @@ static uint8_t mqtt_state = STATE_INIT;
 PROCESS(smart_actuator_process, "Smart Actuator Process");
 AUTOSTART_PROCESSES(&smart_actuator_process);
 
-/* --- FUNZIONE DI SUPPORTO: ESTRAE IL VALORE DAL JSON --- */
+/* --- support function: extracts the value from JSON --- */
 static float extract_json_value(const char* payload) {
   char *ptr = strstr(payload, "\"v\":");
   if(ptr != NULL) {
@@ -79,13 +79,13 @@ static float extract_json_value(const char* payload) {
   return 0.0;
 }
 
-/* --- CALLBACKS COAP (OBSERVE) --- */
+/* --- callback functions for CoAP observations --- */
 static void notification_callback_power(coap_observee_t *obs, void *notification, coap_notification_flag_t flag) {
   if(notification) {
     const uint8_t *payload = NULL;
     coap_get_payload(notification, &payload);
     current_power = extract_json_value((const char *)payload);
-    LOG_INFO("CoAP RX Potenza: %.2f W\n", current_power);
+    LOG_INFO("CoAP RX Power: %.2f W\n", current_power);
     last_power_timestamp = clock_time();
   }
 }
@@ -95,24 +95,24 @@ static void notification_callback_irr(coap_observee_t *obs, void *notification, 
     const uint8_t *payload = NULL;
     coap_get_payload(notification, &payload);
     current_irr = extract_json_value((const char *)payload);
-    LOG_INFO("CoAP RX Irraggiamento: %.4f W/m2\n", current_irr);
+    LOG_INFO("CoAP RX Irradiation: %.4f W/m2\n", current_irr);
     last_irr_timestamp = clock_time();
   }
 }
 
-/* --- CALLBACK MQTT --- */
+/* --- callback function for MQTT events --- */
 static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data) {
   switch(event) {
     case MQTT_EVENT_CONNECTED:
-      LOG_INFO("MQTT Connesso!\n");
+      LOG_INFO("MQTT Connected!\n");
       mqtt_state = STATE_CONNECTED;
       break;
     case MQTT_EVENT_DISCONNECTED:
-      LOG_WARN("!!! Disconnesso dal Broker MQTT. Avvio Auto-Recovery... !!!\n");
+      LOG_WARN("!!! Disconnected from MQTT Broker. Initiating Auto-Recovery... !!!\n");
       mqtt_state = STATE_DISCONNECTED;
       break;
     case MQTT_EVENT_SUBACK:
-      LOG_INFO("Iscrizione a meteo completata.\n");
+      LOG_INFO("Subscription to temperature topic completed.\n");
       mqtt_state = STATE_SUBSCRIBED;
       break;
     case MQTT_EVENT_PUBLISH: {
@@ -120,11 +120,11 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
       char payload[64];
       snprintf(payload, sizeof(payload), "%.*s", msg->payload_length, (char *)msg->payload_chunk);
       
-      /* Se riceviamo la temperatura, aggiorniamo il valore e il timestamp per il Safe Mode */
+      /* If we receive the temperature, update the value and timestamp for Safe Mode */
       if(strstr(payload, "module_temp") != NULL) {
         current_temp = extract_json_value(payload);
         last_temp_timestamp = clock_time();
-        LOG_INFO("MQTT RX Temperatura: %.2f C\n", current_temp);
+        LOG_INFO("MQTT RX Temperature: %.2f C\n", current_temp);
       }
       break;
     }
@@ -144,9 +144,9 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
 
   PROCESS_BEGIN();
 
-  LOG_INFO("Avvio Smart Actuator...\n");
+  LOG_INFO("Starting Smart Actuator...\n");
 
-  /* Inizializzazioni */
+  /* Initialization */
   coap_engine_init();
   mqtt_register(&conn, &smart_actuator_process, CLIENT_ID, mqtt_event, MAX_TCP_SEGMENT_SIZE);
   uiplib_ipaddrconv(BROKER_IP, &broker_address);
@@ -155,17 +155,17 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
   coap_endpoint_parse(COAP_POWER_IP, strlen(COAP_POWER_IP), &ep_power);
   coap_endpoint_parse(COAP_IRR_IP, strlen(COAP_IRR_IP), &ep_irr);
 
-  /* L'Attuatore valuta la situazione ogni 20 secondi */
+  /* Actuator Timer */
   etimer_set(&ai_timer, 20 * CLOCK_SECOND);
 
   while(1) {
     PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&ai_timer));
 
-    /* GESTIONE RETE MQTT E COAP OBSERVE */
+    /* MQTT network management */
     if(have_connectivity()) {
       
       if(mqtt_state == STATE_INIT || mqtt_state == STATE_DISCONNECTED) {
-        LOG_INFO("Connessione MQTT e Avvio CoAP Observe...\n");
+        LOG_INFO("Connecting to MQTT Broker...\n");
         status = mqtt_connect(&conn, BROKER_IP, BROKER_PORT, 60, MQTT_CLEAN_SESSION_ON);
         if(status != MQTT_STATUS_OUT_QUEUE_FULL) {
           mqtt_state = STATE_CONNECTING;
@@ -173,53 +173,54 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
       }
 
       if(mqtt_state == STATE_CONNECTED) {
-        mqtt_subscribe(&conn, NULL, TOPIC_METEO, MQTT_QOS_LEVEL_0);
+        mqtt_subscribe(&conn, NULL, TOPIC_TEMPERATURE, MQTT_QOS_LEVEL_0);
         mqtt_state = STATE_SUBSCRIBING;
+        LOG_INFO("Subscribing to MQTT Temperature Topic...\n");
       }
     }
 
-    /* 2. Gestione Indipendente CoAP (Sganciata da MQTT) */
+    /* CoAP observe management */
     if(obs_power == NULL) {
-      LOG_INFO("Avvio/Ripristino Observe CoAP Potenza...\n");
-      obs_power = coap_obs_request_registration(&ep_power, "telemetria/potenza", notification_callback_power, NULL);
+      LOG_INFO("Starting CoAP Observe for Power...\n");
+      obs_power = coap_obs_request_registration(&ep_power, "telemetry/power", notification_callback_power, NULL);
     }
     
     if(obs_irr == NULL) {
-      LOG_INFO("Avvio/Ripristino Observe CoAP Irraggiamento...\n");
-      obs_irr = coap_obs_request_registration(&ep_irr, "telemetria/irraggiamento", notification_callback_irr, NULL);
+      LOG_INFO("Starting CoAP Observe for Irradiation...\n");
+      obs_irr = coap_obs_request_registration(&ep_irr, "telemetry/irradiation", notification_callback_irr, NULL);
     }
 
-    /* --- IL CUORE: LOGICA DI CONTROLLO AI E SAFE MODE --- */
+    /* Safe Mode Control */
     if(mqtt_state == STATE_SUBSCRIBED) {
       
       bool is_safe_mode = false;
 
-      /* 1. Controllo Safe Mode (Mancanza di dati meteo) */
+      /* Controls on sensor timeouts */
       if ((clock_time() - last_temp_timestamp) > SAFE_MODE_TIMEOUT && last_temp_timestamp != 0) {
-        LOG_WARN("!!! SAFE MODE ATTIVATA !!! Timeout sensore meteo.\n");
+        LOG_WARN("!!! SAFE MODE ACTIVE !!! Timeout temperature sensor.\n");
         is_safe_mode = true;
       }
       if ((clock_time() - last_power_timestamp) > SAFE_MODE_TIMEOUT && last_power_timestamp != 0) {
-        LOG_WARN("!!! SAFE MODE ATTIVATA !!! Timeout sensore potenza.\n");
+        LOG_WARN("!!! SAFE MODE ACTIVE !!! Timeout power sensor.\n");
         is_safe_mode = true;
-        if (obs_power != NULL) {
-          coap_obs_remove_observee(obs_power); /* Elimina la vecchia sessione morta */
-          obs_power = NULL;                    /* Triggera la riconnessione automatica al prossimo ciclo */
+        if (obs_power != NULL) {  
+          coap_obs_remove_observee(obs_power); 
+          obs_power = NULL; /* to reconnect on next round */
         }
       }
       if ((clock_time() - last_irr_timestamp) > SAFE_MODE_TIMEOUT && last_irr_timestamp != 0) {
-        LOG_WARN("!!! SAFE MODE ATTIVATA !!! Timeout sensore irraggiamento.\n");
+        LOG_WARN("!!! SAFE MODE ACTIVE !!! Timeout irradiation sensor.\n");
         is_safe_mode = true;
         if (obs_irr != NULL) {
-          coap_obs_remove_observee(obs_irr);
-          obs_irr = NULL;
+          coap_obs_remove_observee(obs_irr); 
+          obs_irr = NULL; /* to reconnect on next round */
         }
       }
-      /* 2. Esecuzione TinyML (Solo se abbiamo i dati storici dal primo ciclo) */
+      /* ML execution */
       if(first_cycle_done && !is_safe_mode) {
         
         float features[5];
-        /* Ordine: AC_POWER, AC_POWER_t-1, IRRADIATION, IRRADIATION_t-1, MODULE_TEMPERATURE */
+        /* [0] AC_POWER, [1] AC_POWER_t-1, [2] IRRADIATION, [3] IRRADIATION_t-1, [4] MODULE_TEMPERATURE */
         features[0] = (current_power - FEATURE_MEAN[0]) / FEATURE_SCALE[0];
         features[1] = (prev_power    - FEATURE_MEAN[1]) / FEATURE_SCALE[1];
         features[2] = (current_irr   - FEATURE_MEAN[2]) / FEATURE_SCALE[2];
@@ -227,38 +228,39 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
         features[4] = (current_temp  - FEATURE_MEAN[4]) / FEATURE_SCALE[4];
 
         int prediction = smart_battery_predict(features, 5);
-        LOG_INFO("AI Prediction Risultato: %d\n", prediction);
+        LOG_INFO("AI Prediction Result: %d\n", prediction);
 
         if(prediction == 1) {
-          LOG_INFO("Invio comandi di scarica al Sensore Batteria.\n");
-          /* CROLLO IMMINENTE */
+          LOG_INFO("Sending discharge command to Battery Sensor.\n");
+          /* Collapse Predicted */
           leds_on(LEDS_RED);
           leds_off(LEDS_GREEN);
           snprintf(app_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
-          mqtt_publish(&conn, NULL, TOPIC_COMANDI, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+          mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
           /*
-          snprintf(app_buffer, APP_BUFFER_SIZE, "{\"allarme\":\"Possibile crollo potenza rilevato\"}");
-          mqtt_publish(&conn, NULL, TOPIC_ALLARMI, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+          snprintf(app_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"Possible power collapse detected\"}");
+          mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
           */
         } else {
-          /* SISTEMA STABILE */
+          /* System Stable */
+          LOG_INFO("Sending charge command to Battery Sensor.\n");
           leds_on(LEDS_GREEN);
           leds_off(LEDS_RED);
           snprintf(app_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"charge\"}");
-          mqtt_publish(&conn, NULL, TOPIC_COMANDI, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+          mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
         }
       }
 
-      /* 3. Reazione al Safe Mode */
+      /* Safe Mode Reaction */
       if(is_safe_mode) {
-        LOG_INFO("SAFE MODE ON:Invio comandi di scarica al Sensore Batteria.\n");
+        LOG_INFO("SAFE MODE ON: Sending discharge command to Battery Sensor.\n");
         leds_on(LEDS_RED);
         leds_off(LEDS_GREEN);
         snprintf(app_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
-        mqtt_publish(&conn, NULL, TOPIC_COMANDI, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+        mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
       }
 
-      /* Aggiornamento variabili storiche per il ciclo successivo */
+      /* Update variables for the next cycle */
       prev_power = current_power;
       prev_irr = current_irr;
       first_cycle_done = true;
