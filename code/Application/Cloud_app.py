@@ -48,7 +48,7 @@ def on_message(client, userdata, msg):
             
         # Parsing Alarms from the Smart Actuator
         elif "alarms" in data:
-            alarm_msg = data.get("alarm", data.get("allarme", "Unknown Alarm")) # MODIFICA !!!!
+            alarm_msg = data.get("alarm", "Unknown Alarm")
             print(f"\n[!!! MQTT ALARM !!!] Detected by Actuator: {alarm_msg}\n")
             
         # Parsing Commands (Charge/Discharge)
@@ -111,6 +111,14 @@ class RegistrationResource(resource.Resource):
     async def render_post(self, request):
         payload = request.payload.decode('utf-8')
         client_ip = request.remote.sockaddr[0]
+
+        # remove line 113 and add:
+        # if hasattr(request.remote, 'sockaddr'):
+        #     client_ip = request.remote.sockaddr[0]  # Per Ubuntu/Linux
+        # elif hasattr(request.remote, 'address'):
+        #     client_ip = request.remote.address[0]   # Per macOS
+        # else:
+        #     client_ip = "Unknown"
         
         try:
             data = json.loads(payload)
@@ -171,6 +179,8 @@ async def main():
     
     # Start the server context
     # await aiocoap.Context.create_server_context(root, bind=("127.0.0.1", 5683)) # PER MAC
+    # await aiocoap.Context.create_server_context(root, bind=("fd00::1", 5683)) # PER MAC 2
+
     await aiocoap.Context.create_server_context(root, bind=("::", 5683))
     print("[CoAP] Server listening on standard port 5683...\n")
 
