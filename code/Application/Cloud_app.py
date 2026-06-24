@@ -170,7 +170,8 @@ async def main():
     root.add_resource(['registration'], RegistrationResource())
     
     # Start the server context
-    await aiocoap.Context.create_server_context(root, bind=("127.0.0.1", 5683))
+    # await aiocoap.Context.create_server_context(root, bind=("127.0.0.1", 5683)) # PER MAC
+    await aiocoap.Context.create_server_context(root, bind=("::", 5683))
     print("[CoAP] Server listening on standard port 5683...\n")
 
     # 3. Application Keep-Alive
