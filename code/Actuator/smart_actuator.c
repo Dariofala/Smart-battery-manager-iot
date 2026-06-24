@@ -32,7 +32,8 @@
 #define TOPIC_ALARMS  "network/alarms"
 
 #define APP_BUFFER_SIZE 128
-static char app_buffer[APP_BUFFER_SIZE];
+static char sensors_buffer[APP_BUFFER_SIZE];
+static char alarms_buffer[APP_BUFFER_SIZE];
 #define MAX_TCP_SEGMENT_SIZE 128
 
 /* --- machine learning features --- */
@@ -235,19 +236,19 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
           /* Collapse Predicted */
           leds_on(LEDS_RED);
           leds_off(LEDS_GREEN);
-          snprintf(app_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
-          mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+          snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
+          mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
           /*
-          snprintf(app_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"Possible power collapse detected\"}");
-          mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+          snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"Possible power collapse detected\"}");
+          mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
           */
         } else {
           /* System Stable */
           LOG_INFO("Sending charge command to Battery Sensor.\n");
           leds_on(LEDS_GREEN);
           leds_off(LEDS_RED);
-          snprintf(app_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"charge\"}");
-          mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+          snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"charge\"}");
+          mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
         }
       }
 
@@ -256,8 +257,8 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
         LOG_INFO("SAFE MODE ON: Sending discharge command to Battery Sensor.\n");
         leds_on(LEDS_RED);
         leds_off(LEDS_GREEN);
-        snprintf(app_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
-        mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+        snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
+        mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
       }
 
       /* Update variables for the next cycle */
