@@ -238,10 +238,10 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
           leds_off(LEDS_GREEN);
           snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
           mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
-          /*
+          
           snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"Possible power collapse detected\"}");
           mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
-          */
+        
         } else {
           /* System Stable */
           LOG_INFO("Sending charge command to Battery Sensor.\n");
