@@ -9,7 +9,7 @@
 
 #include "dataset_replay.h" // include the dataset
 
-#define LOG_MODULE "Sensore CoAP (Irradiation)"
+#define LOG_MODULE "CoAP Sensor (Irradiation)"
 #define LOG_LEVEL LOG_LEVEL_INFO
 
 // Time between each sample
@@ -19,7 +19,7 @@
 /* --- REGISTRATION CONFIGURATION --- */
 #define SERVER_EP "coap://[fd00::1]:5683"
 #define NODE_ID "nRF52840-Irradiation"
-#define NODE_TYPE "irraggiamento"
+#define NODE_TYPE "irradiation"
 
 static coap_endpoint_t server_ep;
 static coap_message_t request[1]; /* The CoAP request packet */
@@ -42,11 +42,11 @@ static void res_get_handler(coap_message_t *request, coap_message_t *response, u
 static void res_event_handler(void);
 
 // Observe resource definition
-EVENT_RESOURCE(res_irraggiamento, "title=\"Irraggiamento Solare\";obs", res_get_handler, NULL, NULL, NULL, res_event_handler);
+EVENT_RESOURCE(res_irradiation, "title=\"Solar irradiation\";obs", res_get_handler, NULL, NULL, NULL, res_event_handler);
 
-// Event handler: called when we execute res_irraggiamento.trigger()
+// Event handler: called when we execute res_irradiation.trigger()
 static void res_event_handler(void) {
-  coap_notify_observers(&res_irraggiamento);
+  coap_notify_observers(&res_irradiation);
 }
 
 // GET handler: builds the JSON payload to be sent
@@ -103,8 +103,8 @@ PROCESS_THREAD(coap_irradiation_process, ev, data)
 
   coap_engine_init();
 
-  // Bind the resource to the URI "/telemetria/irraggiamento"
-  coap_activate_resource(&res_irraggiamento, "telemetria/irraggiamento");
+  // Bind the resource to the URI "/telemetry/irradiation"
+  coap_activate_resource(&res_irradiation, "telemetry/irradiation");
 
   etimer_set(&timer, SAMPLING_INTERVAL);
 
@@ -122,7 +122,7 @@ PROCESS_THREAD(coap_irradiation_process, ev, data)
         coap_init_message(request, COAP_TYPE_CON, COAP_POST, 0);
         coap_set_header_uri_path(request, "registration");
         
-        /* Create the JSON payload: {"id": "nRF52840-Irradiation", "type": "irraggiamento"} */
+        /* Create the JSON payload: {"id": "nRF52840-Irradiation", "type": "irradiation"} */
         static char reg_payload[64];
         snprintf(reg_payload, sizeof(reg_payload), "{\"id\":\"%s\", \"type\":\"%s\"}", NODE_ID, NODE_TYPE);
         coap_set_payload(request, (uint8_t *)reg_payload, strlen(reg_payload));
@@ -143,7 +143,7 @@ PROCESS_THREAD(coap_irradiation_process, ev, data)
         LOG_INFO("Simulated sampling: Step %d, Value: %.2f W/m2\n", current_step, irradiation_array[current_step]);
         
         // Trigger the CoAP event. This single line implements the entire Observe pattern towards the Actuator/Cloud
-        res_irraggiamento.trigger();
+        res_irradiation.trigger();
       }
       
     } else {

@@ -46,9 +46,9 @@ def on_message(client, userdata, msg):
                 .field("value", value)
             write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
             
-        # Parsing Alarms from the Smart Actuator (MODIFICARE PER RIMUOVERE "allarme")
-        elif "allarme" in data or "alarm" in data:
-            alarm_msg = data.get("alarm", data.get("allarme", "Unknown Alarm"))
+        # Parsing Alarms from the Smart Actuator
+        elif "alarms" in data:
+            alarm_msg = data.get("alarm", data.get("allarme", "Unknown Alarm")) # MODIFICA !!!!
             print(f"\n[!!! MQTT ALARM !!!] Detected by Actuator: {alarm_msg}\n")
             
         # Parsing Commands (Charge/Discharge)
@@ -65,7 +65,7 @@ active_observes = {}
 
 async def observe_sensor(client_ip, node_id, node_type):
     protocol = await aiocoap.Context.create_client_context()
-    resource_path = "telemetria/potenza" if node_type == "potenza" else "telemetria/irraggiamento"
+    resource_path = "telemetry/power" if node_type == "power" else "telemetry/irradiation"
     uri = f"coap://[{client_ip}]:5683/{resource_path}"
     
     request = aiocoap.Message(code=aiocoap.GET, uri=uri, observe=0)
@@ -114,13 +114,13 @@ class RegistrationResource(resource.Resource):
         
         try:
             data = json.loads(payload)
-            # The C node must send a JSON like: {"id": "nRF52840-Power", "type": "potenza"}
+            # The C node must send a JSON like: {"id": "nRF52840-Power", "type": "power"}
             node_id = data.get("id", "Unknown")
             node_type = data.get("type", "Unknown")
             
             print(f"\n[CoAP REGISTRATION] Received from {node_id} (IP: {client_ip})")
             
-            if node_type in ["potenza", "irraggiamento"]:
+            if node_type in ["power", "irradiation"]:
                 
                 # THE MAGIC IS HERE: If we already know this ID, it means it changed IP or rebooted!
                 if node_id in active_observes:

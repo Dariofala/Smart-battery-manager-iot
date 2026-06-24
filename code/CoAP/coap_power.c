@@ -9,7 +9,7 @@
 
 #include "dataset_replay.h" // include the dataset
 
-#define LOG_MODULE "Sensore CoAP (Power)"
+#define LOG_MODULE "CoAP Sensor (Power)"
 #define LOG_LEVEL LOG_LEVEL_INFO
 
 // Time between each sample
@@ -19,7 +19,7 @@
 /* --- REGISTRATION CONFIGURATION --- */
 #define SERVER_EP "coap://[fd00::1]:5683"
 #define NODE_ID "nRF52840-Power"
-#define NODE_TYPE "potenza"
+#define NODE_TYPE "power"
 
 static coap_endpoint_t server_ep;
 static coap_message_t request[1]; /* The CoAP request packet */
@@ -42,11 +42,11 @@ static void res_get_handler(coap_message_t *request, coap_message_t *response, u
 static void res_event_handler(void);
 
 // Observe resource definition
-EVENT_RESOURCE(res_potenza, "title=\"Potenza Generata AC\";obs", res_get_handler, NULL, NULL, NULL, res_event_handler);
+EVENT_RESOURCE(res_power, "title=\"Generated AC Power\";obs", res_get_handler, NULL, NULL, NULL, res_event_handler);
 
-// Event handler: called when we execute res_potenza.trigger()
+// Event handler: called when we execute res_power.trigger()
 static void res_event_handler(void) {
-  coap_notify_observers(&res_potenza);
+  coap_notify_observers(&res_power);
 }
 
 // GET handler: builds the JSON payload to be sent
@@ -104,8 +104,8 @@ PROCESS_THREAD(coap_sensor_process, ev, data)
 
   coap_engine_init();
 
-  // Bind the resource to the correct URI "/telemetria/potenza"
-  coap_activate_resource(&res_potenza, "telemetria/potenza");
+  // Bind the resource to the correct URI "/telemetry/power"
+  coap_activate_resource(&res_power, "telemetry/power");
 
   etimer_set(&timer, SAMPLING_INTERVAL);
 
@@ -123,7 +123,7 @@ PROCESS_THREAD(coap_sensor_process, ev, data)
         coap_init_message(request, COAP_TYPE_CON, COAP_POST, 0);
         coap_set_header_uri_path(request, "registration");
         
-        /* Create the JSON payload: {"id": "nRF52840-Power", "type": "potenza"} */
+        /* Create the JSON payload: {"id": "nRF52840-Power", "type": "power"} */
         static char reg_payload[64];
         snprintf(reg_payload, sizeof(reg_payload), "{\"id\":\"%s\", \"type\":\"%s\"}", NODE_ID, NODE_TYPE);
         coap_set_payload(request, (uint8_t *)reg_payload, strlen(reg_payload));
@@ -144,7 +144,7 @@ PROCESS_THREAD(coap_sensor_process, ev, data)
         LOG_INFO("Simulated sampling: Step %d, Value: %.2f W\n", current_step, ac_power_array[current_step]);
         
         // Trigger the CoAP event. This single line implements the entire Observe pattern towards the Actuator/Cloud
-        res_potenza.trigger();
+        res_power.trigger();
       }
       
     } else {
