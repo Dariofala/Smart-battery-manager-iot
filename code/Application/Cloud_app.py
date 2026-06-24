@@ -59,32 +59,44 @@ def on_message(client, userdata, msg):
         print(f"[MQTT ERROR] Received non-JSON payload on {topic}: {payload}")
 
 
-# Dizionario per tracciare i task: la chiave ora è il NODE_ID, non più l'IP!
+# MODULE 2: CoAP CLIENT (Observe Setup)
+# Dictionary to track tasks: the key is now the NODE_ID, no longer the IP!
 active_observes = {}
 
 async def observe_sensor(client_ip, node_id, node_type):
-    # ... setup uri ...
+    protocol = await aiocoap.Context.create_client_context()
+    resource_path = "telemetria/potenza" if node_type == "potenza" else "telemetria/irraggiamento"
+    uri = f"coap://[{client_ip}]:5683/{resource_path}"
+    
+    request = aiocoap.Message(code=aiocoap.GET, uri=uri, observe=0)
+    print(f"[CoAP OBSERVE] Starting to listen on {uri}...")
+    
     try:
-        # ... ciclo di ascolto con timeout ...
+        requester = protocol.request(request)
+        observation_iterator = requester.observation.__aiter__()
+        
+        # Listening loop with timeout
         while True:
-            response = await asyncio.wait_for(observation_iterator.__anext__(), timeout=30.0)
+            response = await asyncio.wait_for(observation_iterator.__anext__(), timeout=60.0)
             payload = response.payload.decode('utf-8')
             
-            print(f"[TELEMETRIA CoAP] {node_id} ({client_ip}): {payload}")
+            print(f"[CoAP TELEMETRY] {node_id} ({client_ip}): {payload}")
             
-            # Quando sbloccherai INFLUXDB, il TAG deve essere il node_id, NON l'IP!
+            # When you unlock INFLUXDB, the TAG must be the node_id, NOT the IP!
             # point = Point("iot_sensors").tag("device", node_id).field("value", float(json.loads(payload)["v"]))
-            # write_api.write(...)
+            # write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
             
     except asyncio.TimeoutError:
-        print(f"[CoAP TIMEOUT] Il sensore {node_id} ({client_ip}) non risponde. È caduto!")
+        print(f"[CoAP TIMEOUT] Sensor {node_id} ({client_ip}) is not responding. It went down!")
     except Exception as e:
-        print(f"[CoAP ERROR] Errore su {node_id}: {e}")
+        print(f"[CoAP ERROR] Error on {node_id}: {e}")
     finally:
-        # Pulizia memoria quando muore
+        # Memory cleanup when it dies
         if node_id in active_observes and active_observes[node_id]['ip'] == client_ip:
             del active_observes[node_id]
 
+
+# MODULE 3: CoAP SERVER (Registration)
 class RegistrationResource(resource.Resource):
     async def render_post(self, request):
         payload = request.payload.decode('utf-8')
@@ -92,37 +104,36 @@ class RegistrationResource(resource.Resource):
         
         try:
             data = json.loads(payload)
-            # Il nodo C deve inviare un JSON tipo: {"id": "nRF52840-Power", "type": "potenza"}
-            node_id = data.get("id", "Sconosciuto")
-            node_type = data.get("type", "Sconosciuto")
+            # The C node must send a JSON like: {"id": "nRF52840-Power", "type": "potenza"}
+            node_id = data.get("id", "Unknown")
+            node_type = data.get("type", "Unknown")
             
-            print(f"\n[CoAP REGISTRAZIONE] Ricevuta da {node_id} (IP: {client_ip})")
+            print(f"\n[CoAP REGISTRATION] Received from {node_id} (IP: {client_ip})")
             
             if node_type in ["potenza", "irraggiamento"]:
                 
-                # LA MAGIA È QUI: Se conosciamo già questo ID, significa che ha cambiato IP o si è riavviato!
+                # THE MAGIC IS HERE: If we already know this ID, it means it changed IP or rebooted!
                 if node_id in active_observes:
-                    vecchio_ip = active_observes[node_id]['ip']
-                    print(f"[CoAP RECOVERY] Il nodo {node_id} è tornato online. Vecchio IP: {vecchio_ip} -> Nuovo IP: {client_ip}")
-                    print(f"[CoAP RECOVERY] Abbatto la vecchia connessione e stabilisco la nuova.")
+                    old_ip = active_observes[node_id]['ip']
+                    print(f"[CoAP RECOVERY] Node {node_id} is back online. Old IP: {old_ip} -> New IP: {client_ip}")
+                    print(f"[CoAP RECOVERY] Tearing down the old connection and establishing the new one.")
                     
-                    # Killiamo il task vecchio che ascoltava l'IP morto
+                    # Kill the old task that was listening to the dead IP
                     active_observes[node_id]['task'].cancel()
                 
-                # Creiamo il nuovo task puntato sul NUOVO IP, ma lo salviamo usando l'ID
+                # Create the new task pointing to the NEW IP, but save it using the ID
                 task = asyncio.create_task(observe_sensor(client_ip, node_id, node_type))
                 
-                # Salviamo sia il task che l'IP per diagnostica
+                # Save both the task and the IP for diagnostics
                 active_observes[node_id] = {'task': task, 'ip': client_ip}
                 
             else:
-                print(f"[WARN] Tipo di nodo ignorato: {node_type}")
+                print(f"[WARN] Node type ignored: {node_type}")
                 
         except json.JSONDecodeError:
-            print("[ERROR] Payload non valido.")
+            print("[ERROR] Invalid payload.")
 
-        return aiocoap.Message(code=aiocoap.CREATED, payload=b"Registrazione OK")
-
+        return aiocoap.Message(code=aiocoap.CREATED, payload=b"Registration OK")
 
 
 # MAIN LOOP: MULTI-PROTOCOL ORCHESTRATION
