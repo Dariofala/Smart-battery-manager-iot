@@ -18,7 +18,7 @@ INFLUX_BUCKET = "smart_battery_db"
 # write_api = client_db.write_api(write_options=SYNCHRONOUS)
 
 # MODULE 1: MQTT MANAGEMENT (Background Thread)
-def on_connect(client, userdata, flags, rc):
+def on_connect(client, userdata, flags, rc, properties):
     print(f"[MQTT] Connected to local Mosquitto broker (Code: {rc})")
     # Subscribe to the topics defined in the C firmware
     client.subscribe("network/#")
@@ -143,7 +143,7 @@ async def main():
     print("==================================================\n")
 
     # 1. MQTT Client Initialization
-    mqtt_client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)    
+    mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)   
     mqtt_client.on_connect = on_connect
     mqtt_client.on_message = on_message
     
@@ -160,7 +160,7 @@ async def main():
     root.add_resource(['registration'], RegistrationResource())
     
     # Start the server context
-    await aiocoap.Context.create_server_context(root)
+    await aiocoap.Context.create_server_context(root, bind=("127.0.0.1", 5683))
     print("[CoAP] Server listening on standard port 5683...\n")
 
     # 3. Application Keep-Alive
