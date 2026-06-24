@@ -170,15 +170,15 @@ PROCESS_THREAD(mqtt_battery_process, ev, data)
       
       if(is_charging) {
         if(current_soc >= 100.0) {
-          leds_set(LEDS_NUM_TO_MASK(LEDS_GREEN)); // 100% Charge -> Green
+          leds_set(LEDS_NUM_TO_MASK(LEDS_GREEN));   // 100% Charge -> Green
         } else {
-          leds_set(LEDS_NUM_TO_MASK(LEDS_BLUE));  // Charging -> Blue/
+          leds_set(LEDS_NUM_TO_MASK(LEDS_BLUE));    // Charging -> Blue
         }
       } else {
         if(current_soc <= 20.0) {
-          leds_on(LEDS_RED);    // Below 20% discharging -> Red
+          leds_set(LEDS_NUM_TO_MASK(LEDS_RED));     // Below 20% discharging -> Red
         } else {
-          leds_on(LEDS_YELLOW); // Normal discharging -> Yellow
+          leds_set(LEDS_NUM_TO_MASK(LEDS_YELLOW));  // Normal discharging -> Yellow
         }
       }
 
