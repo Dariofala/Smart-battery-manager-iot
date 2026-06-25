@@ -27,7 +27,8 @@
 #define COAP_POWER_IP "coap://[fd00::202:2:2:2]:5683"
 #define COAP_IRR_IP   "coap://[fd00::203:3:3:3]:5683"
 
-#define TOPIC_TEMPERATURE    "network/temperature"
+/* MQTT Topics */
+#define TOPIC_SUBSCRIBE_ALL "network/#" // Subscribe to everything under network/ to get both temp and battery
 #define TOPIC_COMMANDS  "network/commands/battery"
 #define TOPIC_ALARMS  "network/alarms"
 
@@ -44,12 +45,23 @@ static const float FEATURE_SCALE[5] = { 380.8638f, 381.0449f, 0.3070f, 0.3065f, 
 static float current_power = 0.0, prev_power = 0.0;
 static float current_irr = 0.0,   prev_irr = 0.0;
 static float current_temp = 0.0;
+static float current_soc = 100.0; // Battery State of Charge
 
 static bool first_cycle_done = false;
 static uint32_t last_temp_timestamp = 0;
 static uint32_t last_power_timestamp = 0;
 static uint32_t last_irr_timestamp = 0;
 #define SAFE_MODE_TIMEOUT (60 * CLOCK_SECOND)
+
+/* --- FSM (Finite State Machine) Configurations --- */
+#define ACT_STATE_PV    1
+#define ACT_STATE_BATT  2
+#define ACT_STATE_GRID  3
+
+static uint8_t system_state = ACT_STATE_PV; // Initial state
+static uint8_t recovery_counter = 0;
+#define PV_THRESHOLD 140.0
+#define CRITICAL_SOC 20.0
 
 /* MQTT and CoAP Structures */
 static struct mqtt_connection conn;
@@ -113,7 +125,7 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
       mqtt_state = STATE_DISCONNECTED;
       break;
     case MQTT_EVENT_SUBACK:
-      LOG_INFO("Subscription to temperature topic completed.\n");
+      LOG_INFO("Subscription to MQTT topics completed.\n");
       mqtt_state = STATE_SUBSCRIBED;
       break;
     case MQTT_EVENT_PUBLISH: {
@@ -121,11 +133,15 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
       char payload[64];
       snprintf(payload, sizeof(payload), "%.*s", msg->payload_length, (char *)msg->payload_chunk);
       
-      /* If we receive the temperature, update the value and timestamp for Safe Mode */
+      /* Identify if the message is Temperature or Battery SOC */
       if(strstr(payload, "module_temp") != NULL) {
         current_temp = extract_json_value(payload);
         last_temp_timestamp = clock_time();
         LOG_INFO("MQTT RX Temperature: %.2f C\n", current_temp);
+      } 
+      else if (strstr(payload, "battery_soc") != NULL) {
+        current_soc = extract_json_value(payload);
+        LOG_INFO("MQTT RX Battery SOC: %.1f%%\n", current_soc);
       }
       break;
     }
@@ -143,9 +159,14 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
   static struct etimer ai_timer;
   static uip_ipaddr_t broker_address;
 
+  static clock_time_t initial_time;
+  static clock_time_t finish_time;
+  static clock_time_t cycle_duration_tick;
+  static float cycle_duration_ms;
+
   PROCESS_BEGIN();
 
-  LOG_INFO("Starting Smart Actuator...\n");
+  LOG_INFO("Starting Smart Actuator (3-State FSM)...\n");
 
   /* Initialization */
   coap_engine_init();
@@ -174,9 +195,10 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
       }
 
       if(mqtt_state == STATE_CONNECTED) {
-        mqtt_subscribe(&conn, NULL, TOPIC_TEMPERATURE, MQTT_QOS_LEVEL_0);
+        /* Subscribe using wildcard to get both temperature and battery updates */
+        mqtt_subscribe(&conn, NULL, TOPIC_SUBSCRIBE_ALL, MQTT_QOS_LEVEL_0);
         mqtt_state = STATE_SUBSCRIBING;
-        LOG_INFO("Subscribing to MQTT Temperature Topic...\n");
+        LOG_INFO("Subscribing to MQTT Telemetry Topics...\n");
       }
     }
 
@@ -217,47 +239,147 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
           obs_irr = NULL; /* to reconnect on next round */
         }
       }
-      /* ML execution */
+
+      /* === CORE LOGIC: 3-STATE FINITE STATE MACHINE === */
       if(first_cycle_done && !is_safe_mode) {
         
-        float features[5];
-        /* [0] AC_POWER, [1] AC_POWER_t-1, [2] IRRADIATION, [3] IRRADIATION_t-1, [4] MODULE_TEMPERATURE */
-        features[0] = (current_power - FEATURE_MEAN[0]) / FEATURE_SCALE[0];
-        features[1] = (prev_power    - FEATURE_MEAN[1]) / FEATURE_SCALE[1];
-        features[2] = (current_irr   - FEATURE_MEAN[2]) / FEATURE_SCALE[2];
-        features[3] = (prev_irr      - FEATURE_MEAN[3]) / FEATURE_SCALE[3];
-        features[4] = (current_temp  - FEATURE_MEAN[4]) / FEATURE_SCALE[4];
+        /* STATE 1: PV REGIME */
+        if (system_state == ACT_STATE_PV) {
+            
+            float features[5];
+            /* [0] AC_POWER, [1] AC_POWER_t-1, [2] IRRADIATION, [3] IRRADIATION_t-1, [4] MODULE_TEMPERATURE */
+            features[0] = (current_power - FEATURE_MEAN[0]) / FEATURE_SCALE[0];
+            features[1] = (prev_power    - FEATURE_MEAN[1]) / FEATURE_SCALE[1];
+            features[2] = (current_irr   - FEATURE_MEAN[2]) / FEATURE_SCALE[2];
+            features[3] = (prev_irr      - FEATURE_MEAN[3]) / FEATURE_SCALE[3];
+            features[4] = (current_temp  - FEATURE_MEAN[4]) / FEATURE_SCALE[4];
 
-        int prediction = smart_battery_predict(features, 5);
-        LOG_INFO("AI Prediction Result: %d\n", prediction);
+            int prediction = smart_battery_predict(features, 5);
+            LOG_INFO("AI Prediction Result: %d\n", prediction);
 
-        if(prediction == 1) {
-          LOG_INFO("Sending discharge command to Battery Sensor.\n");
-          /* Collapse Predicted */
-          leds_on(LEDS_RED);
-          leds_off(LEDS_GREEN);
-          snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
-          mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
-          
-          snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"Possible power collapse detected\"}");
-          mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+            if(prediction == 1) {
+                /* TRANSITION 1 -> 2: Collapse Predicted */
+                system_state = ACT_STATE_BATT;
+                recovery_counter = 0; // Reset recovery threshold
+                
+                LOG_INFO(">> STATE 2 ACTIVE: Battery Regime (Collapse Predicted).\n");
+                leds_set(LEDS_NUM_TO_MASK(LEDS_YELLOW));
+                
+                snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
+                mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                
+                initial_time = clock_time();
+                while(!mqtt_ready(&conn)) {
+                    PROCESS_PAUSE(); 
+                }
+                finish_time = clock_time();
+
+                cycle_duration_tick = finish_time - initial_time;
+                cycle_duration_ms = ((float)cycle_duration_tick * 1000.0f) / CLOCK_SECOND;
+                LOG_INFO("MQTT outbound queue clearance wait duration: %.2f ms\n", cycle_duration_ms);
+
+
+                // probabilmente questo non funziona perché fa due pubblicazioni consecutive su mqtt
+                snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"Collapse predicted. Entering Battery Mode.\"}");
+                mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+            } else {
+                /* Maintain State 1 */
+                leds_set(LEDS_NUM_TO_MASK(LEDS_GREEN));
+                snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"charge\"}");
+                mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+            }
+        }
         
-        } else {
-          /* System Stable */
-          LOG_INFO("Sending charge command to Battery Sensor.\n");
-          leds_on(LEDS_GREEN);
-          leds_off(LEDS_RED);
-          snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"charge\"}");
-          mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+        /* STATE 2 & 3: BATTERY OR GRID REGIME (ML Paused) */
+        else if (system_state == ACT_STATE_BATT || system_state == ACT_STATE_GRID) {
+            
+            /* Check PV Recovery Condition */
+            if (current_power >= PV_THRESHOLD) {
+                recovery_counter++;
+                LOG_INFO("PV Recovery evaluation: %d/3 consecutive cycles.\n", recovery_counter);
+            } else {
+                recovery_counter = 0;
+                LOG_INFO("Current_power not enough for PV recovery evaluation. Restarting recovery_counter\n");
+            }
+
+            /* TRANSITION 2/3 -> 1: PV Restored */
+            if (recovery_counter >= 3) {
+                system_state = ACT_STATE_PV;
+                
+                LOG_INFO(">> STATE 1 ACTIVE: PV Regime Restored. Resuming ML predictions.\n");
+                leds_set(LEDS_NUM_TO_MASK(LEDS_GREEN));
+                
+                snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"charge\"}");
+                mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                
+                
+                initial_time = clock_time();
+                while(!mqtt_ready(&conn)) {
+                    PROCESS_PAUSE(); 
+                }
+                finish_time = clock_time();
+
+                cycle_duration_tick = finish_time - initial_time;
+                cycle_duration_ms = ((float)cycle_duration_tick * 1000.0f) / CLOCK_SECOND;
+                LOG_INFO("MQTT outbound queue clearance wait duration: %.2f ms\n", cycle_duration_ms);
+                
+                
+                snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"info\":\"PV production sufficient. Entering PV Mode.\"}");
+                mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+            } 
+            else {
+                /* Evaluate Grid vs Battery */
+                if (system_state == ACT_STATE_BATT) {
+                    if (current_soc <= CRITICAL_SOC) {
+                        /* TRANSITION 2 -> 3: Battery depleted */
+                        system_state = ACT_STATE_GRID;
+                        
+                        LOG_INFO(">> STATE 3 ACTIVE: Grid Regime. Battery < 20%%.\n");
+                        leds_set(LEDS_NUM_TO_MASK(LEDS_RED));
+                        
+                        snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"critical\"}");
+                        mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                        
+                        
+                        initial_time = clock_time();
+                        while(!mqtt_ready(&conn)) {
+                            PROCESS_PAUSE(); 
+                        }
+                        finish_time = clock_time();
+
+                        cycle_duration_tick = finish_time - initial_time;
+                        cycle_duration_ms = ((float)cycle_duration_tick * 1000.0f) / CLOCK_SECOND;
+                        LOG_INFO("MQTT outbound queue clearance wait duration: %.2f ms\n", cycle_duration_ms);
+
+                        snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"Battery critical (< 20%%). Switching to National Grid.\"}");
+                        mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                    } else {
+                        /* Maintain State 2 */
+                        leds_set(LEDS_NUM_TO_MASK(LEDS_YELLOW));
+                        snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
+                        mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                    }
+                } 
+                else if (system_state == ACT_STATE_GRID) {
+                    /* Maintain State 3 */
+                    leds_set(LEDS_NUM_TO_MASK(LEDS_RED));
+                    snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"critical\"}");
+                    mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                }
+            }
         }
       }
 
-      /* Safe Mode Reaction */
+      /* Safe Mode Reaction (Overrides everything to protect the system) */
       if(is_safe_mode) {
-        LOG_INFO("SAFE MODE ON: Sending discharge command to Battery Sensor.\n");
-        leds_on(LEDS_RED);
-        leds_off(LEDS_GREEN);
-        snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
+        LOG_INFO("SAFE MODE ON: Forcing emergency state.\n");
+        leds_set(LEDS_NUM_TO_MASK(LEDS_RED));
+        
+        if (current_soc > CRITICAL_SOC) {
+            snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
+        } else {
+            snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"critical\"}");
+        }
         mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
       }
 
