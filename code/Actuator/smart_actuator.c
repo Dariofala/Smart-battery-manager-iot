@@ -268,15 +268,15 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                 snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
                 mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
                 
-                initial_time = clock_time();
-                while(!mqtt_ready(&conn)) {
-                    PROCESS_PAUSE(); 
-                }
-                finish_time = clock_time();
+                // initial_time = clock_time();
+                // while(!mqtt_ready(&conn)) {
+                //     PROCESS_PAUSE(); 
+                // }
+                // finish_time = clock_time();
 
-                cycle_duration_tick = finish_time - initial_time;
-                cycle_duration_ms = ((float)cycle_duration_tick * 1000.0f) / CLOCK_SECOND;
-                LOG_INFO("MQTT outbound queue clearance wait duration: %.2f ms\n", cycle_duration_ms);
+                // cycle_duration_tick = finish_time - initial_time;
+                // cycle_duration_ms = ((float)cycle_duration_tick * 1000.0f) / CLOCK_SECOND;
+                // LOG_INFO("MQTT outbound queue clearance wait duration: %.2f ms\n", cycle_duration_ms);
 
 
                 // probabilmente questo non funziona perché fa due pubblicazioni consecutive su mqtt
@@ -290,8 +290,18 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
             }
         }
         
-        /* STATE 2 & 3: BATTERY OR GRID REGIME (ML Paused) */
+        /* STATE 2 & 3: BATTERY OR GRID REGIME (AI Gated Recovery) */
         else if (system_state == ACT_STATE_BATT || system_state == ACT_STATE_GRID) {
+            
+            /* Compute TinyML Features during isolation to double check recovery stability */
+            float features[5];
+            features[0] = (current_power - FEATURE_MEAN[0]) / FEATURE_SCALE[0];
+            features[1] = (prev_power    - FEATURE_MEAN[1]) / FEATURE_SCALE[1];
+            features[2] = (current_irr   - FEATURE_MEAN[2]) / FEATURE_SCALE[2];
+            features[3] = (prev_irr      - FEATURE_MEAN[3]) / FEATURE_SCALE[3];
+            features[4] = (current_temp  - FEATURE_MEAN[4]) / FEATURE_SCALE[4];
+
+            int prediction = smart_battery_predict(features, 5);
             
             /* Check PV Recovery Condition */
             if (current_power >= PV_THRESHOLD) {
@@ -302,31 +312,48 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                 LOG_INFO("Current_power not enough for PV recovery evaluation. Restarting recovery_counter\n");
             }
 
-            /* TRANSITION 2/3 -> 1: PV Restored */
+            /* TRANSITION 2/3 -> 1: PV Restored (Gated by AI Validation) */
             if (recovery_counter >= 3) {
-                system_state = ACT_STATE_PV;
                 
-                LOG_INFO(">> STATE 1 ACTIVE: PV Regime Restored. Resuming ML predictions.\n");
-                leds_set(LEDS_NUM_TO_MASK(LEDS_GREEN));
-                
-                snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"charge\"}");
-                mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
-                
-                
-                initial_time = clock_time();
-                while(!mqtt_ready(&conn)) {
-                    PROCESS_PAUSE(); 
-                }
-                finish_time = clock_time();
+                /* If the physical threshold is met but AI predicts an imminent drop, abort recovery */
+                if (prediction == 1) {
+                    recovery_counter = 0; 
+                    LOG_WARN("PV Recovery aborted! Physical threshold met, but AI predicts imminent drop on next step.\n");
+                    
+                    /* Re-evaluate current state configurations immediately */
+                    if (system_state == ACT_STATE_BATT) {
+                        leds_set(LEDS_NUM_TO_MASK(LEDS_YELLOW));
+                        snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
+                        mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                    }
+                } 
+                else {
+                    /* Safe to switch back to PV Mode */
+                    system_state = ACT_STATE_PV;
+                    recovery_counter = 0;
+                    
+                    LOG_INFO(">> STATE 1 ACTIVE: PV Regime Restored. Resuming ML predictions.\n");
+                    leds_set(LEDS_NUM_TO_MASK(LEDS_GREEN));
+                    
+                    snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"charge\"}");
+                    mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
 
-                cycle_duration_tick = finish_time - initial_time;
-                cycle_duration_ms = ((float)cycle_duration_tick * 1000.0f) / CLOCK_SECOND;
-                LOG_INFO("MQTT outbound queue clearance wait duration: %.2f ms\n", cycle_duration_ms);
-                
-                
-                snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"info\":\"PV production sufficient. Entering PV Mode.\"}");
-                mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
-            } 
+
+                    // initial_time = clock_time();
+                    // while(!mqtt_ready(&conn)) {
+                    //     PROCESS_PAUSE(); 
+                    // }
+                    // finish_time = clock_time();
+
+                    // cycle_duration_tick = finish_time - initial_time;
+                    // cycle_duration_ms = ((float)cycle_duration_tick * 1000.0f) / CLOCK_SECOND;
+                    // LOG_INFO("MQTT outbound queue clearance wait duration: %.2f ms\n", cycle_duration_ms);
+
+
+                    snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"info\":\"PV production sufficient. Entering PV Mode.\"}");
+                    mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                }
+            }
             else {
                 /* Evaluate Grid vs Battery */
                 if (system_state == ACT_STATE_BATT) {
@@ -341,15 +368,15 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                         mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
                         
                         
-                        initial_time = clock_time();
-                        while(!mqtt_ready(&conn)) {
-                            PROCESS_PAUSE(); 
-                        }
-                        finish_time = clock_time();
+                        // initial_time = clock_time();
+                        // while(!mqtt_ready(&conn)) {
+                        //     PROCESS_PAUSE(); 
+                        // }
+                        // finish_time = clock_time();
 
-                        cycle_duration_tick = finish_time - initial_time;
-                        cycle_duration_ms = ((float)cycle_duration_tick * 1000.0f) / CLOCK_SECOND;
-                        LOG_INFO("MQTT outbound queue clearance wait duration: %.2f ms\n", cycle_duration_ms);
+                        // cycle_duration_tick = finish_time - initial_time;
+                        // cycle_duration_ms = ((float)cycle_duration_tick * 1000.0f) / CLOCK_SECOND;
+                        // LOG_INFO("MQTT outbound queue clearance wait duration: %.2f ms\n", cycle_duration_ms);
 
                         snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"Battery critical (< 20%%). Switching to National Grid.\"}");
                         mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
