@@ -6,6 +6,7 @@
 #include "sys/log.h"
 #include "dev/leds.h"
 
+#include <stdlib.h>
 #include <math.h> 
 #include <string.h>
 #include <stdio.h>
@@ -18,8 +19,8 @@
 #define BROKER_PORT 1883
 
 #define CLIENT_ID "nRF52840-Battery"
-#define TOPIC_BATTERY "network/battery"
-#define TOPIC_COMMANDS "network/commands/battery" 
+#define TOPIC_BATTERY "network/battery"             // Topic to publish battery state of charge
+#define TOPIC_COMMANDS "network/commands/battery"   // Topic to receive commands from the actuator
 
 #define APP_BUFFER_SIZE 128
 static char app_buffer[APP_BUFFER_SIZE];
@@ -28,10 +29,15 @@ static char app_buffer[APP_BUFFER_SIZE];
 #define SAMPLING_INTERVAL (15 * CLOCK_SECOND)
 
 // BATTERY LOGIC AND PHYSICAL STATE
-#define SOC_THRESHOLD 1.0
-static float current_soc = 100.0; // Start with 100% charge
+static float current_soc = 100.0; 
 static float last_published_soc = -100.0; 
-static bool is_charging = true;   // Flag to determine charging or discharging state */
+
+// Battery Physical States 
+#define BATT_STATE_CHARGING    0
+#define BATT_STATE_DISCHARGING 1
+#define BATT_STATE_CRITICAL    2
+
+static uint8_t batt_state = BATT_STATE_CHARGING; // Initial state
 
 // MQTT Connection Structure and State Machine
 static struct mqtt_connection conn;
@@ -71,21 +77,44 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
       LOG_INFO("Message published successfully (PUBACK received).\n");
       break;
 
-    // Received a message from the subscribed topic */
+    // Received a message from the subscribed topic 
     case MQTT_EVENT_PUBLISH: {
       struct mqtt_message *msg = data;
-      char payload[32];
+      char payload[64];
       
       // Safely copy the payload to perform text parsing
       snprintf(payload, sizeof(payload), "%.*s", msg->payload_length, (char *)msg->payload_chunk);
-      
+
       if(strstr(payload, "discharge") != NULL) {
-        is_charging = false;
+        batt_state = BATT_STATE_DISCHARGING;
         LOG_INFO("COMMAND RECEIVED: START DISCHARGE\n");
       } else if(strstr(payload, "charge") != NULL) {
-        is_charging = true;
+        batt_state = BATT_STATE_CHARGING;
         LOG_INFO("COMMAND RECEIVED: START CHARGE\n");
+      } else if(strstr(payload, "critical") != NULL) {
+        // Command received from the actuator to halt discharge
+        batt_state = BATT_STATE_CRITICAL;
+        LOG_INFO("COMMAND RECEIVED: CRITICAL STATE (HALT DISCHARGE)\n");
       }
+      
+      /* // TEMPORARILY COMMENTED OUT - CLI FORCED SOC OVERRIDE
+      else if(strstr(payload, "soc_battery") != NULL) {
+        // Handle CLI forced SOC override (Assuming format like "soc_battery: 45.5")
+        char *val_ptr = strchr(payload, ':');
+        if(val_ptr != NULL) {
+            float forced_soc = atof(val_ptr + 1);
+            if(forced_soc >= 0.0 && forced_soc <= 100.0) {
+                current_soc = forced_soc;
+                LOG_INFO("CLI COMMAND RECEIVED: SOC FORCED TO %.1f%%\n", current_soc);
+                
+                // Re-evaluate state if we were pushed back above critical while discharging
+                if(batt_state == BATT_STATE_CRITICAL && current_soc > 20.0) {
+                    batt_state = BATT_STATE_DISCHARGING; 
+                }
+            }
+        }
+      }
+      */
       break;
     }
     
@@ -106,7 +135,7 @@ PROCESS_THREAD(mqtt_battery_process, ev, data)
 
   PROCESS_BEGIN();
 
-  LOG_INFO("Starting MQTT Sensor (Interactive Battery)...\n");
+  LOG_INFO("Starting MQTT Sensor (Smart Battery 3-States)...\n");
 
   // Register the MQTT Client by assigning its name and callback 
   mqtt_register(&conn, &mqtt_battery_process, CLIENT_ID, mqtt_event, MAX_TCP_SEGMENT_SIZE);
@@ -152,45 +181,48 @@ PROCESS_THREAD(mqtt_battery_process, ev, data)
     // STATE_SUBSCRIBED
     if(state == STATE_SUBSCRIBED) {
       
-      // Math execution
-      if(is_charging) {
+      // 1. MATH EXECUTION
+      if(batt_state == BATT_STATE_CHARGING) {
         current_soc += 1.5;
         if(current_soc >= 100.0) {
             current_soc = 100.0;
         }
-      } else {
+      } 
+      else if(batt_state == BATT_STATE_DISCHARGING) {
         current_soc -= 1.5;
+        // The actuator is responsible for monitoring the SOC and sending the "critical" command.
+        // We just prevent it from going below 0% physically to avoid math errors.
         if(current_soc <= 0.0) {
             current_soc = 0.0;
         }
       }
+      // If BATT_STATE_CRITICAL, current_soc does not change (simulating Grid Fallback)
 
-      // Led menagement
+      // 2. LED MANAGEMENT
       leds_off(LEDS_ALL); // Turn leds off
       
-      if(is_charging) {
-        if(current_soc >= 100.0) {
-          leds_set(LEDS_NUM_TO_MASK(LEDS_GREEN));   // 100% Charge -> Green
-        } else {
-          leds_set(LEDS_NUM_TO_MASK(LEDS_BLUE));    // Charging -> Blue
-        }
-      } else {
-        if(current_soc <= 20.0) {
-          leds_set(LEDS_NUM_TO_MASK(LEDS_RED));     // Below 20% discharging -> Red
-        } else {
-          leds_set(LEDS_NUM_TO_MASK(LEDS_YELLOW));  // Normal discharging -> Yellow
-        }
+      if(batt_state == BATT_STATE_CHARGING) {
+         leds_set(LEDS_NUM_TO_MASK(LEDS_GREEN));  // Charging -> Green
+      } 
+      else if(batt_state == BATT_STATE_DISCHARGING) {
+         leds_set(LEDS_NUM_TO_MASK(LEDS_YELLOW)); // Discharging -> Yellow
+      } 
+      else if(batt_state == BATT_STATE_CRITICAL) {
+         leds_set(LEDS_NUM_TO_MASK(LEDS_RED));    // Critical (Halted) -> Red
       }
 
-      // Publication to CLoud
-      if(fabs(current_soc - last_published_soc) >= SOC_THRESHOLD) {
+      // 3. TELEMETRY PUBLICATION
+      if(fabs(current_soc - last_published_soc) >= ) {
         
         snprintf(app_buffer, APP_BUFFER_SIZE, 
                  "{\"bn\":\"%s\", \"n\":\"battery_soc\", \"v\":%.1f, \"u\":\"%%\"}", 
                  CLIENT_ID, current_soc);
         
+        char* state_str = (batt_state == BATT_STATE_CHARGING) ? "Charge" : 
+                          (batt_state == BATT_STATE_DISCHARGING) ? "Discharge" : "Critical/Halted";
+                          
         LOG_INFO("State: %.1f%% (%s). Publishing to %s\n", 
-                 current_soc, is_charging ? "Charge" : "Discharge", TOPIC_BATTERY);
+                 current_soc, state_str, TOPIC_BATTERY);
         
         mqtt_publish(&conn, NULL, TOPIC_BATTERY, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
         

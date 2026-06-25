@@ -34,9 +34,9 @@ static char app_buffer[APP_BUFFER_SIZE];
 static float last_published_temp = -100.0; // Dummy initialization to force the 1st transmission
 static int current_step = 0;
 
-/* Contatore per l'Heartbeat */
+// Heartbeat counter 
 static int cycles_without_publish = 0;
-#define MAX_IDLE_CYCLES 3  /* 3 cicli da 15s = 45 secondi massimi di silenzio */
+#define MAX_IDLE_CYCLES 3  // 3 cycles for a maximum of 45s, at the end of that temperature must be sent
 
 // MQTT Connection Structure and State Machine
 static struct mqtt_connection conn;

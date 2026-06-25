@@ -16,15 +16,15 @@
 #define SAMPLING_INTERVAL (10 * CLOCK_SECOND)
 
 
-/* --- REGISTRATION CONFIGURATION --- */
+// REGISTRATION CONFIGURATION 
 #define SERVER_EP "coap://[fd00::1]:5683"
 #define NODE_ID "nRF52840-Irradiation"
 #define NODE_TYPE "irradiation"
 
 static coap_endpoint_t server_ep;
-static coap_message_t request[1]; /* The CoAP request packet */
+static coap_message_t request[1]; // The CoAP request packet 
 
-/* State Machine for Registration */
+// State Machine for Registration 
 #define STATE_INIT 0
 #define STATE_REGISTERING 1
 #define STATE_REGISTERED 2
@@ -137,7 +137,7 @@ PROCESS_THREAD(coap_irradiation_process, ev, data)
         
         current_step++;
         if(current_step >= REPLAY_STEPS) {
-          current_step = 0; // Rewind the dataset at the end of the 50 steps
+          current_step = 0; // Rewind the dataset at the end of the 150 steps
         }
 
         LOG_INFO("Simulated sampling: Step %d, Value: %.2f W/m2\n", current_step, irradiation_array[current_step]);
