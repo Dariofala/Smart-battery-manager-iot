@@ -29,7 +29,7 @@ static char app_buffer[APP_BUFFER_SIZE];
 #define SAMPLING_INTERVAL (15 * CLOCK_SECOND)
 
 // BATTERY LOGIC AND PHYSICAL STATE
-static float current_soc = 100.0; 
+static float current_soc = 60.0; 
 static float last_published_soc = -100.0; 
 
 // Battery Physical States 

@@ -282,6 +282,31 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                 // probabilmente questo non funziona perché fa due pubblicazioni consecutive su mqtt
                 snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"Collapse predicted. Entering Battery Mode.\"}");
                 mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+            } else if (current_power < PV_THRESHOLD) {
+              /* TRANSITION 1 -> 2: not enough power generation */
+                system_state = ACT_STATE_BATT;
+                recovery_counter = 0; // Reset recovery threshold
+                
+                LOG_INFO(">> STATE 2 ACTIVE: Battery Regime (Not enough power generation).\n");
+                leds_set(LEDS_NUM_TO_MASK(LEDS_YELLOW));
+                
+                snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
+                mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                
+                // initial_time = clock_time();
+                // while(!mqtt_ready(&conn)) {
+                //     PROCESS_PAUSE(); 
+                // }
+                // finish_time = clock_time();
+
+                // cycle_duration_tick = finish_time - initial_time;
+                // cycle_duration_ms = ((float)cycle_duration_tick * 1000.0f) / CLOCK_SECOND;
+                // LOG_INFO("MQTT outbound queue clearance wait duration: %.2f ms\n", cycle_duration_ms);
+
+
+                // probabilmente questo non funziona perché fa due pubblicazioni consecutive su mqtt
+                snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"Not enough power generation. Entering Battery Mode.\"}");
+                mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
             } else {
                 /* Maintain State 1 */
                 leds_set(LEDS_NUM_TO_MASK(LEDS_GREEN));
