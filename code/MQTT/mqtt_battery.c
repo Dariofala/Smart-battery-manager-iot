@@ -212,7 +212,7 @@ PROCESS_THREAD(mqtt_battery_process, ev, data)
       }
 
       // 3. TELEMETRY PUBLICATION
-      if(fabs(current_soc - last_published_soc) >= ) {
+      if(fabs(current_soc - last_published_soc) >= 1.0) {
         
         snprintf(app_buffer, APP_BUFFER_SIZE, 
                  "{\"bn\":\"%s\", \"n\":\"battery_soc\", \"v\":%.1f, \"u\":\"%%\"}", 
