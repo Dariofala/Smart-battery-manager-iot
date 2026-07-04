@@ -157,6 +157,7 @@ static bool have_connectivity(void) {
 PROCESS_THREAD(smart_actuator_process, ev, data)
 {
   static struct etimer ai_timer;
+  static struct etimer spacing_timer;
   static uip_ipaddr_t broker_address;
 
   static clock_time_t initial_time;
@@ -277,7 +278,10 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                 // cycle_duration_tick = finish_time - initial_time;
                 // cycle_duration_ms = ((float)cycle_duration_tick * 1000.0f) / CLOCK_SECOND;
                 // LOG_INFO("MQTT outbound queue clearance wait duration: %.2f ms\n", cycle_duration_ms);
-
+                
+                // Timer to clear the MQTT outbound queue before sending the alarm message
+                etimer_set(&spacing_timer, CLOCK_SECOND / 2);
+                PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
 
                 // probabilmente questo non funziona perché fa due pubblicazioni consecutive su mqtt
                 snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"Collapse predicted. Entering Battery Mode.\"}");
@@ -302,6 +306,9 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                 // cycle_duration_tick = finish_time - initial_time;
                 // cycle_duration_ms = ((float)cycle_duration_tick * 1000.0f) / CLOCK_SECOND;
                 // LOG_INFO("MQTT outbound queue clearance wait duration: %.2f ms\n", cycle_duration_ms);
+                // Timer to clear the MQTT outbound queue before sending the alarm message
+                etimer_set(&spacing_timer, CLOCK_SECOND / 2);
+                PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
 
 
                 // probabilmente questo non funziona perché fa due pubblicazioni consecutive su mqtt
@@ -311,6 +318,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                 /* Maintain State 1 */
                 leds_set(LEDS_NUM_TO_MASK(LEDS_GREEN));
                 snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"charge\"}");
+                LOG_INFO("Maintaining PV Regime. Sending charge command to battery.\n");
                 mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
             }
         }
@@ -373,7 +381,9 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                     // cycle_duration_tick = finish_time - initial_time;
                     // cycle_duration_ms = ((float)cycle_duration_tick * 1000.0f) / CLOCK_SECOND;
                     // LOG_INFO("MQTT outbound queue clearance wait duration: %.2f ms\n", cycle_duration_ms);
-
+                    // Timer to clear the MQTT outbound queue before sending the alarm message
+                    etimer_set(&spacing_timer, CLOCK_SECOND / 2);
+                    PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
 
                     snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"info\":\"PV production sufficient. Entering PV Mode.\"}");
                     mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
@@ -402,6 +412,9 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                         // cycle_duration_tick = finish_time - initial_time;
                         // cycle_duration_ms = ((float)cycle_duration_tick * 1000.0f) / CLOCK_SECOND;
                         // LOG_INFO("MQTT outbound queue clearance wait duration: %.2f ms\n", cycle_duration_ms);
+                        // Timer to clear the MQTT outbound queue before sending the alarm message
+                        etimer_set(&spacing_timer, CLOCK_SECOND / 2);
+                        PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
 
                         snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"Battery critical (< 20%%). Switching to National Grid.\"}");
                         mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
