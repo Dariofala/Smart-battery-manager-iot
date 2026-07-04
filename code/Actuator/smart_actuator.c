@@ -28,24 +28,24 @@
 #define COAP_IRR_IP   "coap://[fd00::203:3:3:3]:5683"
 
 /* MQTT Topics */
-#define TOPIC_SUBSCRIBE_ALL "network/#" // Subscribe to everything under network/ to get both temp and battery
-#define TOPIC_COMMANDS  "network/commands/battery"
-#define TOPIC_ALARMS  "network/alarms"
+#define TOPIC_SUBSCRIBE_ALL   "network/#" 
+#define TOPIC_COMMANDS        "network/commands/battery"
+#define TOPIC_ALARMS          "network/alarms"
 
 #define APP_BUFFER_SIZE 128
 static char sensors_buffer[APP_BUFFER_SIZE];
 static char alarms_buffer[APP_BUFFER_SIZE];
 #define MAX_TCP_SEGMENT_SIZE 128
 
-/* --- machine learning features --- */
+/* --- Machine Learning Features --- */
 static const float FEATURE_MEAN[5]  = { 277.4355f, 277.7913f, 0.2324f, 0.2329f, 32.0750f };
 static const float FEATURE_SCALE[5] = { 380.5854f, 380.6051f, 0.3069f, 0.3076f, 11.8827f };
 
-/* --- state variables --- */
+/* --- State Variables --- */
 static float current_power = 0.0, prev_power = 0.0;
 static float current_irr = 0.0,   prev_irr = 0.0;
 static float current_temp = 0.0;
-static float current_soc = 100.0; // Battery State of Charge
+static float current_soc = 100.0; 
 
 static bool first_cycle_done = false;
 static uint32_t last_temp_timestamp = 0;
@@ -58,7 +58,7 @@ static uint32_t last_irr_timestamp = 0;
 #define ACT_STATE_BATT  2
 #define ACT_STATE_GRID  3
 
-static uint8_t system_state = ACT_STATE_PV; // Initial state
+static uint8_t system_state = ACT_STATE_PV; 
 static uint8_t recovery_counter = 0;
 #define PV_THRESHOLD 140.0
 #define CRITICAL_SOC 20.0
@@ -83,7 +83,7 @@ static uint8_t mqtt_state = STATE_INIT;
 PROCESS(smart_actuator_process, "Smart Actuator Process");
 AUTOSTART_PROCESSES(&smart_actuator_process);
 
-/* --- support function: extracts the value from JSON --- */
+/* --- Support function: extracts the value from JSON --- */
 static float extract_json_value(const char* payload) {
   char *ptr = strstr(payload, "\"v\":");
   if(ptr != NULL) {
@@ -92,7 +92,7 @@ static float extract_json_value(const char* payload) {
   return 0.0;
 }
 
-/* --- callback functions for CoAP observations --- */
+/* --- Callback functions for CoAP observations --- */
 static void notification_callback_power(coap_observee_t *obs, void *notification, coap_notification_flag_t flag) {
   if(notification) {
     const uint8_t *payload = NULL;
@@ -113,7 +113,7 @@ static void notification_callback_irr(coap_observee_t *obs, void *notification, 
   }
 }
 
-/* --- callback function for MQTT events --- */
+/* --- Callback function for MQTT events --- */
 static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data) {
   switch(event) {
     case MQTT_EVENT_CONNECTED:
@@ -130,10 +130,24 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
       break;
     case MQTT_EVENT_PUBLISH: {
       struct mqtt_message *msg = data;
-      char payload[64];
+      char payload[128];
       snprintf(payload, sizeof(payload), "%.*s", msg->payload_length, (char *)msg->payload_chunk);
-      
-      /* Identify if the message is Temperature or Battery SOC */
+
+      /* Reaction to Alarm received by Application's CLI */
+      if(strcmp(msg->topic, TOPIC_ALARMS) == 0) {
+        if(strstr(payload, "Simulating Power collapse") != NULL) {
+          LOG_WARN("[CLI ALARM] Received Alarm from Application's CLI. Forcing State 2.\n");
+          system_state = ACT_STATE_BATT;
+          recovery_counter = 0;
+          leds_set(LEDS_NUM_TO_MASK(LEDS_YELLOW));
+          
+          snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
+          mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+        }
+        break;
+      }
+
+      /* 3. Parsing Telemetry (TEMPERATURE / BATTERY SOC) */
       if(strstr(payload, "module_temp") != NULL) {
         current_temp = extract_json_value(payload);
         last_temp_timestamp = clock_time();
@@ -268,17 +282,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                 
                 snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
                 mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
-                
-                // initial_time = clock_time();
-                // while(!mqtt_ready(&conn)) {
-                //     PROCESS_PAUSE(); 
-                // }
-                // finish_time = clock_time();
-
-                // cycle_duration_tick = finish_time - initial_time;
-                // cycle_duration_ms = ((float)cycle_duration_tick * 1000.0f) / CLOCK_SECOND;
-                // LOG_INFO("MQTT outbound queue clearance wait duration: %.2f ms\n", cycle_duration_ms);
-                
+                            
                 // Timer to clear the MQTT outbound queue before sending the alarm message
                 etimer_set(&spacing_timer, CLOCK_SECOND / 2);
                 PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
@@ -297,15 +301,6 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                 snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
                 mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
                 
-                // initial_time = clock_time();
-                // while(!mqtt_ready(&conn)) {
-                //     PROCESS_PAUSE(); 
-                // }
-                // finish_time = clock_time();
-
-                // cycle_duration_tick = finish_time - initial_time;
-                // cycle_duration_ms = ((float)cycle_duration_tick * 1000.0f) / CLOCK_SECOND;
-                // LOG_INFO("MQTT outbound queue clearance wait duration: %.2f ms\n", cycle_duration_ms);
                 // Timer to clear the MQTT outbound queue before sending the alarm message
                 etimer_set(&spacing_timer, CLOCK_SECOND / 2);
                 PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
@@ -371,16 +366,6 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                     snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"charge\"}");
                     mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
 
-
-                    // initial_time = clock_time();
-                    // while(!mqtt_ready(&conn)) {
-                    //     PROCESS_PAUSE(); 
-                    // }
-                    // finish_time = clock_time();
-
-                    // cycle_duration_tick = finish_time - initial_time;
-                    // cycle_duration_ms = ((float)cycle_duration_tick * 1000.0f) / CLOCK_SECOND;
-                    // LOG_INFO("MQTT outbound queue clearance wait duration: %.2f ms\n", cycle_duration_ms);
                     // Timer to clear the MQTT outbound queue before sending the alarm message
                     etimer_set(&spacing_timer, CLOCK_SECOND / 2);
                     PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
@@ -401,17 +386,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                         
                         snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"critical\"}");
                         mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
-                        
-                        
-                        // initial_time = clock_time();
-                        // while(!mqtt_ready(&conn)) {
-                        //     PROCESS_PAUSE(); 
-                        // }
-                        // finish_time = clock_time();
 
-                        // cycle_duration_tick = finish_time - initial_time;
-                        // cycle_duration_ms = ((float)cycle_duration_tick * 1000.0f) / CLOCK_SECOND;
-                        // LOG_INFO("MQTT outbound queue clearance wait duration: %.2f ms\n", cycle_duration_ms);
                         // Timer to clear the MQTT outbound queue before sending the alarm message
                         etimer_set(&spacing_timer, CLOCK_SECOND / 2);
                         PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
@@ -426,10 +401,31 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                     }
                 } 
                 else if (system_state == ACT_STATE_GRID) {
-                    /* Maintain State 3 */
-                    leds_set(LEDS_NUM_TO_MASK(LEDS_RED));
-                    snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"critical\"}");
-                    mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+
+                    /* TRANSITION 3 -> 2: Battery magically recharged (CLI Override) */
+                    if (current_soc > CRITICAL_SOC) {
+                        system_state = ACT_STATE_BATT;
+
+                        LOG_INFO(">> STATE 2 ACTIVE: Battery Regime Restored (SOC > 20%%).\n");
+                        leds_set(LEDS_NUM_TO_MASK(LEDS_YELLOW));
+
+                        /* Send command to the battery to unlock it from the critical state */
+                        snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
+                        mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+
+                        /* Timer to clear the MQTT outbound queue before sending the alarm message */
+                        etimer_set(&spacing_timer, CLOCK_SECOND / 2);
+                        PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
+
+                        snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"info\":\"Battery SOC restored. Resuming Battery Mode.\"}");
+                        mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                    } 
+                    else {
+                        /* Maintain State 3 */ 
+                        leds_set(LEDS_NUM_TO_MASK(LEDS_RED));
+                        snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"critical\"}");
+                        mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                    }
                 }
             }
         }
