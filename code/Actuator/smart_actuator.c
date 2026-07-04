@@ -411,20 +411,20 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
 
                         /* Send command to the battery to unlock it from the critical state */
                         snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
-                        mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                        mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
 
                         /* Timer to clear the MQTT outbound queue before sending the alarm message */
                         etimer_set(&spacing_timer, CLOCK_SECOND / 2);
                         PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
 
                         snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"info\":\"Battery SOC restored. Resuming Battery Mode.\"}");
-                        mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                        mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
                     } 
                     else {
                         /* Maintain State 3 */ 
                         leds_set(LEDS_NUM_TO_MASK(LEDS_RED));
                         snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"critical\"}");
-                        mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                        mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
                     }
                 }
             }
