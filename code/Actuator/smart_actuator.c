@@ -38,8 +38,8 @@ static char alarms_buffer[APP_BUFFER_SIZE];
 #define MAX_TCP_SEGMENT_SIZE 128
 
 /* --- machine learning features --- */
-static const float FEATURE_MEAN[5]  = { 276.5014f, 276.9828f, 0.2314f, 0.2313f, 32.0125f };
-static const float FEATURE_SCALE[5] = { 380.8638f, 381.0449f, 0.3070f, 0.3065f, 11.8554f };
+static const float FEATURE_MEAN[5]  = { 277.4355f, 277.7913f, 0.2324f, 0.2329f, 32.0750f };
+static const float FEATURE_SCALE[5] = { 380.5854f, 380.6051f, 0.3069f, 0.3076f, 11.8827f };
 
 /* --- state variables --- */
 static float current_power = 0.0, prev_power = 0.0;
