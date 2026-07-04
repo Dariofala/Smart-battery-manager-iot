@@ -97,27 +97,19 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
         LOG_INFO("COMMAND RECEIVED: CRITICAL STATE (HALT DISCHARGE)\n");
       }
       
-      /* // TEMPORARILY COMMENTED OUT - CLI FORCED SOC OVERRIDE
-      else if(strstr(payload, "soc_battery") != NULL) {
-        // Handle CLI forced SOC override (Assuming format like "soc_battery: 45.5")
-        char *val_ptr = strchr(payload, ':');
+      // CLI FORCED SOC OVERRIDE
+      else if(strstr(payload, "battery_soc") != NULL) {
+        // Find the start of the numeric value right after the "v": key
+        char *val_ptr = strstr(payload, "\"v\":");
         if(val_ptr != NULL) {
-            float forced_soc = atof(val_ptr + 1);
-            if(forced_soc >= 0.0 && forced_soc <= 100.0) {
-                current_soc = forced_soc;
-                LOG_INFO("CLI COMMAND RECEIVED: SOC FORCED TO %.1f%%\n", current_soc);
-                
-                // Re-evaluate state if we were pushed back above critical while discharging
-                if(batt_state == BATT_STATE_CRITICAL && current_soc > 20.0) {
-                    batt_state = BATT_STATE_DISCHARGING; 
-                }
-            }
+
+            float forced_soc = atof(val_ptr + 4); // Extract the float value skipping the 4 characters of '"v":'
+            current_soc = forced_soc;
+            LOG_INFO("CLI COMMAND RECEIVED: SOC FORCED TO %.1f%%\n", current_soc);
         }
       }
-      */
       break;
     }
-    
     default:
       break;
   }
