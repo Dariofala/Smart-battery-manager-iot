@@ -80,7 +80,7 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
     // Received a message from the subscribed topic 
     case MQTT_EVENT_PUBLISH: {
       struct mqtt_message *msg = data;
-      char payload[64];
+      char payload[128];
       
       // Safely copy the payload to perform text parsing
       snprintf(payload, sizeof(payload), "%.*s", msg->payload_length, (char *)msg->payload_chunk);
