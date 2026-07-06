@@ -80,7 +80,7 @@ static void registration_callback(coap_message_t *response) {
   reg_state = STATE_REGISTERED;
 }
 
-/* Helper function to check if the node has joined the RPL network */
+// Helper function to check if the node has joined the RPL network 
 static bool have_connectivity(void) {
   if(uip_ds6_get_global(ADDR_PREFERRED) == NULL || uip_ds6_defrt_choose() == NULL) {
     return false;
@@ -111,7 +111,7 @@ PROCESS_THREAD(coap_irradiation_process, ev, data)
   while(1) {
     PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&timer));
 
-   /* Check if the IPv6 network is ready and the Border Router is reachable */
+   // Check if the IPv6 network is ready and the Border Router is reachable 
     if(have_connectivity()) {
       
       // PHASE 1: CLOUD REGISTRATION
@@ -122,7 +122,7 @@ PROCESS_THREAD(coap_irradiation_process, ev, data)
         coap_init_message(request, COAP_TYPE_CON, COAP_POST, 0);
         coap_set_header_uri_path(request, "registration");
         
-        /* Create the JSON payload: {"id": "nRF52840-Irradiation", "type": "irradiation"} */
+        // Create the JSON payload: {"id": "nRF52840-Irradiation", "type": "irradiation"} 
         static char reg_payload[64];
         snprintf(reg_payload, sizeof(reg_payload), "{\"id\":\"%s\", \"type\":\"%s\"}", NODE_ID, NODE_TYPE);
         coap_set_payload(request, (uint8_t *)reg_payload, strlen(reg_payload));
@@ -148,7 +148,7 @@ PROCESS_THREAD(coap_irradiation_process, ev, data)
       
     } else {
         LOG_INFO("Waiting for RPL routing...\n");
-        reg_state = STATE_INIT; /* Reset registration state if we lose connectivity */
+        reg_state = STATE_INIT; // Reset registration state if we lose connectivity 
     }
 
     etimer_reset(&timer);

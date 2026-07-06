@@ -431,12 +431,13 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
       /* Safe Mode Reaction (Overrides everything to protect the system) */
       if(is_safe_mode) {
         LOG_INFO("SAFE MODE ON: Forcing emergency state.\n");
-        leds_set(LEDS_NUM_TO_MASK(LEDS_RED));
         
         if (current_soc > CRITICAL_SOC) {
-            snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
+          snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
+          leds_set(LEDS_NUM_TO_MASK(LEDS_YELLOW));
         } else {
-            snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"critical\"}");
+          snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"critical\"}");
+          leds_set(LEDS_NUM_TO_MASK(LEDS_RED));
         }
         mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
       }

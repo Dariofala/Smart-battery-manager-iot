@@ -9,22 +9,22 @@
 
 #include "dataset_replay.h" // include the dataset
 
-#define LOG_MODULE "Sensore CoAP (Power)"
+#define LOG_MODULE "CoAP Sensor (Power)"
 #define LOG_LEVEL LOG_LEVEL_INFO
 
 // Time between each sample
 #define SAMPLING_INTERVAL (10 * CLOCK_SECOND)
 
 
-/* --- REGISTRATION CONFIGURATION --- */
+// REGISTRATION CONFIGURATION 
 #define SERVER_EP "coap://[fd00::1]:5683"
 #define NODE_ID "nRF52840-Power"
 #define NODE_TYPE "power"
 
 static coap_endpoint_t server_ep;
-static coap_message_t request[1]; /* The CoAP request packet */
+static coap_message_t request[1]; // The CoAP request packet 
 
-/* State Machine for Registration */
+// State Machine for Registration 
 #define STATE_INIT 0
 #define STATE_REGISTERING 1
 #define STATE_REGISTERED 2
@@ -80,7 +80,7 @@ static void registration_callback(coap_message_t *response) {
   reg_state = STATE_REGISTERED;
 }
 
-/* Helper function to check if the node has joined the RPL network */
+// Helper function to check if the node has joined the RPL network 
 static bool have_connectivity(void) {
   if(uip_ds6_get_global(ADDR_PREFERRED) == NULL || uip_ds6_defrt_choose() == NULL) {
     return false;
@@ -112,7 +112,7 @@ PROCESS_THREAD(coap_sensor_process, ev, data)
   while(1) {
     PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&timer));
 
-    /* Check if the IPv6 network is ready and the Border Router is reachable */
+    // Check if the IPv6 network is ready and the Border Router is reachable 
     if(have_connectivity()) {
       
       // PHASE 1: CLOUD REGISTRATION
@@ -128,8 +128,8 @@ PROCESS_THREAD(coap_sensor_process, ev, data)
         snprintf(reg_payload, sizeof(reg_payload), "{\"id\":\"%s\", \"type\":\"%s\"}", NODE_ID, NODE_TYPE);
         coap_set_payload(request, (uint8_t *)reg_payload, strlen(reg_payload));
         
-        reg_state = STATE_REGISTERING; /* Wait for the callback */
-        /* Send the request to the Python server */
+        reg_state = STATE_REGISTERING; // Wait for the callback 
+        // Send the request to the Python server 
         COAP_BLOCKING_REQUEST(&server_ep, request, registration_callback);
       }
       
@@ -149,7 +149,7 @@ PROCESS_THREAD(coap_sensor_process, ev, data)
       
     } else {
         LOG_INFO("Waiting for RPL routing...\n");
-        reg_state = STATE_INIT; /* Reset registration state if we lose connectivity */
+        reg_state = STATE_INIT; // Reset registration state if we lose connectivity 
     }
 
     etimer_reset(&timer);

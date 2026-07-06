@@ -295,7 +295,7 @@ async def main():
                             # Building a JSON SenML valid for C parsing
                             payload = json.dumps({"bn": "cli", "n": "battery_soc", "v": num})
                             mqtt_client.publish(COMMANDS_TOPIC, payload)
-                            print(f"\n> [CLI] Sent Battery SOC override: {num}% (JSON formatted)\n")
+                            print(f"\n> [CLI] Sent Battery SOC override: {num}%\n")
                         else:
                             print("\n> [CLI ERROR] Invalid range. SOC must be between 0 and 100.\n")
                     except (IndexError, ValueError):
