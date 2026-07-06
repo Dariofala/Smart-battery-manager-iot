@@ -148,9 +148,9 @@ class RegistrationResource(resource.Resource):
         
         # Cross-platform IP extraction
         if hasattr(request.remote, 'sockaddr'):
-            client_ip = request.remote.sockaddr[0]  # per Ubuntu/Linux
+            client_ip = request.remote.sockaddr[0]  # for Ubuntu/Linux
         elif hasattr(request.remote, 'address'):
-            client_ip = request.remote.address[0]   # per macOS
+            client_ip = request.remote.address[0]   # for macOS
         else:
             client_ip = "Unknown"
         
@@ -240,8 +240,6 @@ async def main():
     root.add_resource(['registration'], RegistrationResource())
     
     # Start the server context
-    # await aiocoap.Context.create_server_context(root, bind=("127.0.0.1", 5683)) # PER MAC
-    # await aiocoap.Context.create_server_context(root, bind=("fd00::1", 5683)) # PER MAC 2
     await aiocoap.Context.create_server_context(root, bind=("::", 5683))
     log_print("[CoAP] Server listening on standard port 5683...\n")
 
@@ -284,7 +282,7 @@ async def main():
                         num_str = command.split(" ")[1]
                         num = float(num_str)
                         if 0.0 <= num <= 100.0:
-                            # Costruiamo un JSON SenML valido per il parser C
+                            # Building a JSON SenML valid for C parsing
                             payload = json.dumps({"bn": "cli", "n": "battery_soc", "v": num})
                             mqtt_client.publish(COMMANDS_TOPIC, payload)
                             print(f"\n> [CLI] Sent Battery SOC override: {num}% (JSON formatted)\n")

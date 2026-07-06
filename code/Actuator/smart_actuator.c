@@ -85,6 +85,8 @@ AUTOSTART_PROCESSES(&smart_actuator_process);
 
 /* --- Support function: extracts the value from JSON --- */
 static float extract_json_value(const char* payload) {
+  if(payload == NULL) return 0.0;
+
   char *ptr = strstr(payload, "\"v\":");
   if(ptr != NULL) {
     return atof(ptr + 4);

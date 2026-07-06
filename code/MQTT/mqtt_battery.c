@@ -80,6 +80,12 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
     // Received a message from the subscribed topic 
     case MQTT_EVENT_PUBLISH: {
       struct mqtt_message *msg = data;
+
+      // ANTI-CRASH PROTECTION
+      if(msg == NULL || msg->payload_chunk == NULL || msg->payload_length <= 0) {
+        break; 
+      }
+
       char payload[128];
       
       // Safely copy the payload to perform text parsing
