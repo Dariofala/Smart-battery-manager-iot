@@ -174,11 +174,6 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
   static struct etimer spacing_timer;
   static uip_ipaddr_t broker_address;
 
-  static clock_time_t initial_time;
-  static clock_time_t finish_time;
-  static clock_time_t cycle_duration_tick;
-  static float cycle_duration_ms;
-
   PROCESS_BEGIN();
 
   LOG_INFO("Starting Smart Actuator (3-State FSM)...\n");
