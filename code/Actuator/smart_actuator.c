@@ -7,6 +7,7 @@
 #include "sys/etimer.h"
 #include "sys/log.h"
 #include "dev/leds.h"
+#include "dev/button-hal.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -132,6 +133,12 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
       break;
     case MQTT_EVENT_PUBLISH: {
       struct mqtt_message *msg = data;
+
+      // ANTI-CRASH PROTECTION
+      if(msg == NULL || msg->payload_chunk == NULL || msg->payload_length <= 0) {
+        break; 
+      }
+
       char payload[128];
       snprintf(payload, sizeof(payload), "%.*s", msg->payload_length, (char *)msg->payload_chunk);
 
@@ -193,7 +200,40 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
   etimer_set(&ai_timer, 20 * CLOCK_SECOND);
 
   while(1) {
-    PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&ai_timer));
+
+    PROCESS_WAIT_EVENT();
+
+    // BUTTON
+    if(ev == button_hal_periodic_event) {
+        button_hal_button_t *btn = (button_hal_button_t *)data;
+        
+        if(btn->press_duration_seconds == 3) {
+            LOG_INFO(">>> BUTTON PRESSED (3s): Manual Override. Forcing AI Prediction (Collapse)! <<<\n");
+            
+            // If currently in PV Regime, force the transition to Battery Regime
+            if (system_state == ACT_STATE_PV) {
+                system_state = ACT_STATE_BATT;
+                recovery_counter = 0;
+                
+                LOG_INFO(">> STATE 2 ACTIVE: Battery Regime (Button Override).\n");
+                leds_set(LEDS_NUM_TO_MASK(LEDS_YELLOW));
+                
+                /* Send command to the battery to unlock it from the critical state */
+                snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
+                mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                
+                /* Timer to clear the MQTT outbound queue before sending the alarm message */
+                etimer_set(&spacing_timer, CLOCK_SECOND / 2);
+                PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
+
+                snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"MANUAL OVERRIDE: Actuator button pressed. Entering Battery Mode.\"}");
+                mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+            }
+        }
+    }
+    
+    // TIMER
+    else if(ev == PROCESS_EVENT_TIMER && data == &ai_timer) {
 
     /* MQTT network management */
     if(have_connectivity()) {
@@ -228,7 +268,8 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
     /* Safe Mode Control */
     if(mqtt_state == STATE_SUBSCRIBED) {
       
-      bool is_safe_mode = false;
+      static bool is_safe_mode;
+      is_safe_mode = false;
 
       /* Controls on sensor timeouts */
       if ((clock_time() - last_temp_timestamp) > SAFE_MODE_TIMEOUT && last_temp_timestamp != 0) {
@@ -284,7 +325,6 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                 etimer_set(&spacing_timer, CLOCK_SECOND / 2);
                 PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
 
-                // probabilmente questo non funziona perché fa due pubblicazioni consecutive su mqtt
                 snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"Collapse predicted. Entering Battery Mode.\"}");
                 mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
             } else if (current_power < PV_THRESHOLD) {
@@ -302,8 +342,6 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                 etimer_set(&spacing_timer, CLOCK_SECOND / 2);
                 PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
 
-
-                // probabilmente questo non funziona perché fa due pubblicazioni consecutive su mqtt
                 snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"Not enough power generation. Entering Battery Mode.\"}");
                 mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
             } else {
@@ -447,9 +485,8 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
       prev_irr = current_irr;
       first_cycle_done = true;
     }
-
-    etimer_reset(&ai_timer);
+      etimer_set(&ai_timer, 20 * CLOCK_SECOND);
+    }
   }
-
   PROCESS_END();
 }

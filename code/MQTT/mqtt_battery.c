@@ -5,6 +5,7 @@
 #include "sys/etimer.h"
 #include "sys/log.h"
 #include "dev/leds.h"
+#include "dev/button-hal.h"
 
 #include <stdlib.h>
 #include <math.h> 
@@ -144,7 +145,22 @@ PROCESS_THREAD(mqtt_battery_process, ev, data)
   etimer_set(&timer, SAMPLING_INTERVAL);
 
   while(1) {
-    PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&timer));
+    PROCESS_WAIT_EVENT();
+
+    // BUTTON
+    if(ev == button_hal_periodic_event) {
+        button_hal_button_t *btn = (button_hal_button_t *)data;
+        
+        if(btn->press_duration_seconds == 3) {
+            LOG_INFO(">>> BUTTON PRESSED (3s): Simulating complete battery discharge! <<<\n");
+            
+            current_soc = 0.0; // Set battery to zero
+            etimer_set(&timer, 0); // Force timer to zero
+        }
+    }
+    
+    // TIMER
+    else if(ev == PROCESS_EVENT_TIMER && data == &timer) {
 
     // MQTT STATE MACHINE
 
@@ -228,7 +244,8 @@ PROCESS_THREAD(mqtt_battery_process, ev, data)
       }
     }
 
-    etimer_reset(&timer);
+    etimer_set(&timer, SAMPLING_INTERVAL);
+    }
   }
 
   PROCESS_END();
