@@ -32,6 +32,12 @@ latest_data = {
     "battery": 0.0
 }
 
+# Global data structure to memorize registered nodes
+registered_nodes = {
+    "actuator": None,  # Address of actuator node
+    "sensors": {}      # Sensors and their address: {"power": "...", "irradiation": "..."}
+}
+
 # Helper function to print logs only if 'show' mode is active
 def log_print(msg):
     if display_mode == "show":
@@ -93,12 +99,15 @@ def on_message(client, userdata, msg):
     except json.JSONDecodeError:
         log_print(f"[MQTT ERROR] Received non-JSON payload: {payload}")
 
+# CoAP client Context reusable for all the output requests
+coap_client_context = None
 
 # MODULE 2: CoAP CLIENT (Observe Setup)
 active_observes = {}
 
 async def observe_sensor(client_ip, node_id, node_type):
-    protocol = await aiocoap.Context.create_client_context()
+    global coap_client_context
+    protocol = coap_client_context
     resource_path = "telemetry/power" if node_type == "power" else "telemetry/irradiation"
     uri = f"coap://[{client_ip}]:5683/{resource_path}"
     
@@ -159,13 +168,21 @@ class RegistrationResource(resource.Resource):
             # The C node must send a JSON like: {"id": "nRF52840-Power", "type": "power"}
             node_id = data.get("id", "Unknown")
             node_type = data.get("type", "Unknown")
+            if not node_id or not node_type:
+                return aiocoap.Message(code=aiocoap.BAD_REQUEST, payload=b"Missing node_id or type")
             
             log_print(f"\n[CoAP REGISTRATION] Received from {node_id} (IP: {client_ip})")
             
-            if node_type in ["power", "irradiation"]:
+            if node_type == "actuator":
+                registered_nodes["actuator"] = client_ip
+                log_print(f"Actuator '{node_id}' successfully mapped to IP: {client_ip}")
+                
+                # If there are already sensors registered we send their IP to the actuator
+                asyncio.create_task(self.flush_pending_sensors())
+
+            elif node_type in ["power", "irradiation"]:
                 if node_id in active_observes:
-                    # old_ip = active_observes[node_id]['ip']
-                    log_print(f"[CoAP RECOVERY] Node {node_id} IP changed. Reconnecting...")
+                    log_print(f"[CoAP RECOVERY] Node {node_id} IP may be different. Reconnecting...")
                     # Kill the old task that was listening to the dead IP
                     active_observes[node_id]['task'].cancel()
                     
@@ -173,12 +190,42 @@ class RegistrationResource(resource.Resource):
                 task = asyncio.create_task(observe_sensor(client_ip, node_id, node_type))
                 # Save both the task and the IP for diagnostics
                 active_observes[node_id] = {'task': task, 'ip': client_ip}
-                
+
+                sensor_endpoint = f"coap://[{client_ip}]:5683"
+                registered_nodes["sensors"][node_type] = sensor_endpoint
+                log_print(f"Sensor '{node_id}' successfully mapped, endpoint: {sensor_endpoint}")
+                if registered_nodes["actuator"]:
+                    asyncio.create_task(self.notify_actuator(node_type, sensor_endpoint))
+            else:
+                return aiocoap.Message(code=aiocoap.BAD_REQUEST, payload=b"Unknown node type")
         except json.JSONDecodeError:
             log_print("[ERROR] Invalid registration payload.")
 
         return aiocoap.Message(code=aiocoap.CREATED, payload=b"Registration OK")
+    
+    # comunicating coap IP address to the actuator
+    async def notify_actuator(self, sensor_type, sensor_endpoint):
+        actuator_ip = registered_nodes["actuator"]
+        if not actuator_ip:
+            return
 
+        actuator_url = f"coap://[{actuator_ip}]:5683/control/register_sensor"
+        payload_bytes = json.dumps({"type": sensor_type, "endpoint": sensor_endpoint}).encode('utf-8')
+
+        log_print(f"Pushing sensor endpoint to actuator at {actuator_url}...")
+        
+        try:
+            request = aiocoap.Message(code=aiocoap.POST, uri=actuator_url, payload=payload_bytes)
+            response = await asyncio.wait_for(coap_client_context.request(request).response, timeout=10.0)
+            log_print(f"Actuator response to sensor mapping: {response.code}")
+        except asyncio.TimeoutError:
+            log_print(f"[TIMEOUT] Actuator at [{actuator_ip}] did not respond in time.")
+        except Exception as e:
+            log_print(f"Failed to notify actuator at [{actuator_ip}]: {str(e)}")
+
+    async def flush_pending_sensors(self):
+        for sensor_type, sensor_endpoint in registered_nodes["sensors"].items():
+            await self.notify_actuator(sensor_type, sensor_endpoint)
 
 # MODULE 4: CLI HELPERS
 def print_menu():
@@ -233,6 +280,10 @@ async def main():
         mqtt_client.loop_start() 
     except ConnectionRefusedError:
         print("[ERROR] Local MQTT broker not found. Ensure Mosquitto is running.")
+    
+    # creating coap_client Context
+    global coap_client_context
+    coap_client_context = await aiocoap.Context.create_client_context()
 
     # 2. CoAP Server Initialization
     root = resource.Site()

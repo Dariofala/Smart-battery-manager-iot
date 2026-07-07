@@ -4,6 +4,7 @@
 #include "net/ipv6/uip.h"
 #include "coap-engine.h"
 #include "coap-observe-client.h"
+#include "coap-blocking-api.h"
 #include "sys/etimer.h"
 #include "sys/log.h"
 #include "dev/leds.h"
@@ -24,9 +25,23 @@
 #define BROKER_PORT 1883
 #define CLIENT_ID "nRF52840-Actuator"
 
-/* Addresses of CoAP Sensors */
+#define SERVER_EP "coap://[fd00::1]:5683"
+#define NODE_TYPE "actuator"
+
+#define STATE_REG_INIT        0
+#define STATE_REG_REGISTERING 1
+#define STATE_REG_REGISTERED  2
+static uint8_t reg_state = STATE_REG_INIT;
+static coap_endpoint_t cloud_ep;
+static coap_message_t reg_request[1];
+
+/* Addresses of CoAP Sensors cooja simulation 
 #define COAP_POWER_IP "coap://[fd00::202:2:2:2]:5683"
-#define COAP_IRR_IP   "coap://[fd00::203:3:3:3]:5683"
+#define COAP_IRR_IP   "coap://[fd00::203:3:3:3]:5683" */
+
+// dynamic addresses
+static bool power_ep_known = false;
+static bool irr_ep_known = false;
 
 /* MQTT Topics */
 #define TOPIC_SUBSCRIBE_ALL   "network/#" 
@@ -93,6 +108,63 @@ static float extract_json_value(const char* payload) {
     return atof(ptr + 4);
   }
   return 0.0;
+}
+
+// Registration callback function 
+static void registration_callback(coap_message_t *response) {
+  if(response == NULL) {
+    LOG_ERR("[REGISTRATION] Cloud unreachable. Will retry.\n");
+    reg_state = STATE_REG_INIT;
+    return;
+  }
+  LOG_INFO("[REGISTRATION] Actuator registered with Cloud App!\n");
+  reg_state = STATE_REG_REGISTERED;
+}
+
+static void res_register_post_handler(coap_message_t *request, coap_message_t *response,
+                                       uint8_t *buffer, uint16_t preferred_size, int32_t *offset);
+
+RESOURCE(res_register_sensor, "title=\"Register Sensor Endpoint\"", NULL, res_register_post_handler, NULL, NULL);
+
+static void res_register_post_handler(coap_message_t *request, coap_message_t *response,
+                                       uint8_t *buffer, uint16_t preferred_size, int32_t *offset) {
+  const uint8_t *payload = NULL;
+  int len = coap_get_payload(request, &payload);
+  if(len <= 0 || len >= 128) {
+    coap_set_status_code(response, BAD_REQUEST_4_00);
+    return;
+  }
+
+  char payload_str[128];
+  memcpy(payload_str, payload, len);
+  payload_str[len] = '\0';
+
+  char *type_ptr = strstr(payload_str, "\"type\":\"");
+  char *ep_ptr   = strstr(payload_str, "\"endpoint\":\"");
+  if(!type_ptr || !ep_ptr) {
+    coap_set_status_code(response, BAD_REQUEST_4_00);
+    return;
+  }
+
+  char node_type[16];
+  char endpoint[64];
+  sscanf(type_ptr + 8, "%15[^\"]", node_type);
+  sscanf(ep_ptr + 12, "%63[^\"]", endpoint);
+
+  if(strcmp(node_type, "power") == 0) {
+    coap_endpoint_parse(endpoint, strlen(endpoint), &ep_power);
+    power_ep_known = true;
+    LOG_INFO("Received Power endpoint: %s\n", endpoint);
+  } else if(strcmp(node_type, "irradiation") == 0) {
+    coap_endpoint_parse(endpoint, strlen(endpoint), &ep_irr);
+    irr_ep_known = true;
+    LOG_INFO("Received Irradiation endpoint: %s\n", endpoint);
+  } else {
+    coap_set_status_code(response, BAD_REQUEST_4_00);
+    return;
+  }
+
+  coap_set_status_code(response, CHANGED_2_04);
 }
 
 /* --- Callback functions for CoAP observations --- */
@@ -192,9 +264,12 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
   mqtt_register(&conn, &smart_actuator_process, CLIENT_ID, mqtt_event, MAX_TCP_SEGMENT_SIZE);
   uiplib_ipaddrconv(BROKER_IP, &broker_address);
 
-  /* Parsing Endpoints CoAP */
+  /* Parsing Endpoints CoAP (static for Cooja simulation) 
   coap_endpoint_parse(COAP_POWER_IP, strlen(COAP_POWER_IP), &ep_power);
-  coap_endpoint_parse(COAP_IRR_IP, strlen(COAP_IRR_IP), &ep_irr);
+  coap_endpoint_parse(COAP_IRR_IP, strlen(COAP_IRR_IP), &ep_irr); */
+
+  coap_activate_resource(&res_register_sensor, "control/register_sensor");
+
 
   /* Actuator Timer */
   etimer_set(&ai_timer, 20 * CLOCK_SECOND);
@@ -237,7 +312,21 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
 
     /* MQTT network management */
     if(have_connectivity()) {
-      
+      //Registration of the actuator to the cloud application
+      if(reg_state == STATE_REG_INIT) {
+        LOG_INFO("[REGISTRATION] Sending POST request to %s\n", SERVER_EP);
+        coap_endpoint_parse(SERVER_EP, strlen(SERVER_EP), &cloud_ep);
+        coap_init_message(reg_request, COAP_TYPE_CON, COAP_POST, 0);
+        coap_set_header_uri_path(reg_request, "registration");
+
+        static char reg_payload[64];
+        snprintf(reg_payload, sizeof(reg_payload), "{\"id\":\"%s\", \"type\":\"%s\"}", CLIENT_ID, NODE_TYPE);
+        coap_set_payload(reg_request, (uint8_t *)reg_payload, strlen(reg_payload));
+
+        reg_state = STATE_REG_REGISTERING;
+        COAP_BLOCKING_REQUEST(&cloud_ep, reg_request, registration_callback);
+      }
+
       if(mqtt_state == STATE_INIT || mqtt_state == STATE_DISCONNECTED) {
         LOG_INFO("Connecting to MQTT Broker...\n");
         status = mqtt_connect(&conn, BROKER_IP, BROKER_PORT, 60, MQTT_CLEAN_SESSION_ON);
@@ -255,12 +344,12 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
     }
 
     /* CoAP observe management */
-    if(obs_power == NULL) {
+    if(obs_power == NULL && power_ep_known) {
       LOG_INFO("Starting CoAP Observe for Power...\n");
       obs_power = coap_obs_request_registration(&ep_power, "telemetry/power", notification_callback_power, NULL);
     }
-    
-    if(obs_irr == NULL) {
+
+    if(obs_irr == NULL && irr_ep_known) {
       LOG_INFO("Starting CoAP Observe for Irradiation...\n");
       obs_irr = coap_obs_request_registration(&ep_irr, "telemetry/irradiation", notification_callback_irr, NULL);
     }
