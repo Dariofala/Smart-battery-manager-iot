@@ -590,6 +590,12 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
           leds_on(LEDS_RED);
         }
         mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+
+        etimer_set(&spacing_timer, CLOCK_SECOND / 2);
+        PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
+
+        snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"SAFE MODE ON: Sensor timeout detected. Emergency regime active.\"}");
+        mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
       }
 
       /* Update variables for the next cycle */

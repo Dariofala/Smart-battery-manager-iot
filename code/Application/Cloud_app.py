@@ -91,6 +91,8 @@ def on_message(client, userdata, msg):
                 latest_data["systemState"] = "STATE 3: Grid Regime"
             elif "PV Mode" in msg_text:
                 latest_data["systemState"] = "STATE 1: PV Regime"
+            elif "SAFE MODE" in msg_text:
+                inferred_state = "EMERGENCY: Safe Mode Active"
                 
         # 3. Parsing Commands
         elif "cmd" in data:
