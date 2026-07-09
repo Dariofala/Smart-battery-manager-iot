@@ -217,13 +217,16 @@ PROCESS_THREAD(mqtt_battery_process, ev, data)
       leds_off(LEDS_ALL); // Turn leds off
       
       if(batt_state == BATT_STATE_CHARGING) {
-         leds_set(LEDS_GREEN);  // Charging -> Green
+         leds_off(LEDS_ALL);
+         leds_on(LEDS_GREEN);         // Charging -> Green
       } 
       else if(batt_state == BATT_STATE_DISCHARGING) {
-         leds_set(LEDS_YELLOW); // Discharging -> Yellow
+         leds_off(LEDS_ALL);
+         leds_single_on(LEDS_YELLOW); // Discharging -> Yellow
       } 
       else if(batt_state == BATT_STATE_CRITICAL) {
-         leds_set(LEDS_RED);    // Critical (Halted) -> Red
+         leds_off(LEDS_ALL);
+         leds_on(LEDS_RED);           // Critical (Halted) -> Red
       }
 
       // 3. TELEMETRY PUBLICATION
