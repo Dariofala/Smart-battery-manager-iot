@@ -56,7 +56,7 @@ static void res_get_handler(coap_message_t *request, coap_message_t *response, u
   float current_power = ac_power_array[current_step];
 
   int p_int = (int)current_power;
-  int p_frac = (int)(fabs(current_power - p_int) * 100);
+  int p_frac = (int)(fabs(current_power - p_int) * 100 + 0.5);
 
   //JSON formatting --> it uses %d.%02d because power has 2 decimals in the dataset
   snprintf((char *)buffer, preferred_size, 
@@ -147,7 +147,7 @@ PROCESS_THREAD(coap_sensor_process, ev, data)
 
         float val = ac_power_array[current_step];
         int val_int = (int)val;
-        int val_frac = (int)(fabs(val - val_int) * 100);
+        int val_frac = (int)(fabs(val - val_int) * 100 + 0.5);
 
         LOG_INFO("Simulated sampling: Step %d, Value: %d.%02d W\n", current_step, val_int, val_frac);
                 

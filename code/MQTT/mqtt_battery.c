@@ -109,10 +109,11 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
         // Find the start of the numeric value right after the "v": key
         char *val_ptr = strstr(payload, "\"v\":");
         if(val_ptr != NULL) {
-
             float forced_soc = atof(val_ptr + 4); // Extract the float value skipping the 4 characters of '"v":'
             current_soc = forced_soc;
-            LOG_INFO("CLI COMMAND RECEIVED: SOC FORCED TO %.1f%%\n", current_soc);
+            int soc_int = (int)current_soc;
+            int soc_frac = (int)(fabs(current_soc - soc_int) * 10 + 0.5);
+            LOG_INFO("CLI COMMAND RECEIVED: SOC FORCED TO %d.%d%%\n", soc_int, soc_frac);
         }
       }
       break;
@@ -216,20 +217,20 @@ PROCESS_THREAD(mqtt_battery_process, ev, data)
       leds_off(LEDS_ALL); // Turn leds off
       
       if(batt_state == BATT_STATE_CHARGING) {
-         leds_set(LEDS_NUM_TO_MASK(LEDS_GREEN));  // Charging -> Green
+         leds_set(LEDS_GREEN);  // Charging -> Green
       } 
       else if(batt_state == BATT_STATE_DISCHARGING) {
-         leds_set(LEDS_NUM_TO_MASK(LEDS_YELLOW)); // Discharging -> Yellow
+         leds_set(LEDS_YELLOW); // Discharging -> Yellow
       } 
       else if(batt_state == BATT_STATE_CRITICAL) {
-         leds_set(LEDS_NUM_TO_MASK(LEDS_RED));    // Critical (Halted) -> Red
+         leds_set(LEDS_RED);    // Critical (Halted) -> Red
       }
 
       // 3. TELEMETRY PUBLICATION
       if(fabs(current_soc - last_published_soc) >= 1.0) {
 
         int soc_int = (int)current_soc;
-        int soc_frac = (int)(current_soc * 10) % 10;
+        int soc_frac = (int)(fabs(current_soc - soc_int) * 10 + 0.5);
         
         snprintf(app_buffer, APP_BUFFER_SIZE, 
                  "{\"bn\":\"%s\", \"n\":\"battery_soc\", \"v\":%d.%d, \"u\":\"%%\"}", 

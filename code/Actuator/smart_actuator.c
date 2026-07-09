@@ -175,7 +175,7 @@ static void notification_callback_power(coap_observee_t *obs, void *notification
     current_power = extract_json_value((const char *)payload);
 
     int p_int = (int)current_power;
-    int p_frac = (int)(fabs(current_power - p_int) * 100);
+    int p_frac = (int)(fabs(current_power - p_int) * 100 + 0.5);
     LOG_INFO("CoAP RX Power: %d.%02d W\n", p_int, p_frac);
     last_power_timestamp = clock_time();
   }
@@ -188,7 +188,7 @@ static void notification_callback_irr(coap_observee_t *obs, void *notification, 
     current_irr = extract_json_value((const char *)payload);
 
     int i_int = (int)current_irr;
-    int i_frac = (int)(fabs(current_irr - i_int) * 10000);
+    int i_frac = (int)(fabs(current_irr - i_int) * 10000 + 0.5);
     LOG_INFO("CoAP RX Irradiation: %d.%04d W/m2\n", i_int, i_frac);
     last_irr_timestamp = clock_time();
   }
@@ -226,7 +226,7 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
           LOG_WARN("[CLI ALARM] Received Alarm from Application's CLI. Forcing State 2.\n");
           system_state = ACT_STATE_BATT;
           recovery_counter = 0;
-          leds_set(LEDS_NUM_TO_MASK(LEDS_YELLOW));
+          leds_set(LEDS_YELLOW);
           
           snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
           mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
@@ -239,13 +239,13 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
         current_temp = extract_json_value(payload);
         last_temp_timestamp = clock_time();
         int t_int = (int)current_temp;
-        int t_frac = (int)(fabs(current_temp - t_int) * 100);
+        int t_frac = (int)(fabs(current_temp - t_int) * 100 + 0.5);
         LOG_INFO("MQTT RX Temperature: %d.%02d C\n", t_int, t_frac);
       } 
       else if (strstr(payload, "battery_soc") != NULL) {
         current_soc = extract_json_value(payload);
         int s_int = (int)current_soc;
-        int s_frac = (int)(fabs(current_soc - s_int) * 10);
+        int s_frac = (int)(fabs(current_soc - s_int) * 10 + 0.5);
         LOG_INFO("MQTT RX Battery SOC: %d.%d%%\n", s_int, s_frac);
       }
       break;
@@ -301,7 +301,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                 recovery_counter = 0;
                 
                 LOG_INFO(">> STATE 2 ACTIVE: Battery Regime (Button Override).\n");
-                leds_set(LEDS_NUM_TO_MASK(LEDS_YELLOW));
+                leds_set(LEDS_YELLOW);
                 
                 /* Send command to the battery to unlock it from the critical state */
                 snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
@@ -415,7 +415,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                 recovery_counter = 0; // Reset recovery threshold
                 
                 LOG_INFO(">> STATE 2 ACTIVE: Battery Regime (Collapse Predicted).\n");
-                leds_set(LEDS_NUM_TO_MASK(LEDS_YELLOW));
+                leds_set(LEDS_YELLOW);
                 
                 snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
                 mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
@@ -432,7 +432,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                 recovery_counter = 0; // Reset recovery threshold
                 
                 LOG_INFO(">> STATE 2 ACTIVE: Battery Regime (Not enough power generation).\n");
-                leds_set(LEDS_NUM_TO_MASK(LEDS_YELLOW));
+                leds_set(LEDS_YELLOW);
                 
                 snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
                 mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
@@ -445,7 +445,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                 mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
             } else {
                 /* Maintain State 1 */
-                leds_set(LEDS_NUM_TO_MASK(LEDS_GREEN));
+                leds_set(LEDS_GREEN);
                 snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"charge\"}");
                 LOG_INFO("Maintaining PV Regime. Sending charge command to battery.\n");
                 mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
@@ -484,7 +484,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                     
                     /* Re-evaluate current state configurations immediately */
                     if (system_state == ACT_STATE_BATT) {
-                        leds_set(LEDS_NUM_TO_MASK(LEDS_YELLOW));
+                        leds_set(LEDS_YELLOW);
                         snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
                         mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
                     }
@@ -495,7 +495,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                     recovery_counter = 0;
                     
                     LOG_INFO(">> STATE 1 ACTIVE: PV Regime Restored. Resuming ML predictions.\n");
-                    leds_set(LEDS_NUM_TO_MASK(LEDS_GREEN));
+                    leds_set(LEDS_GREEN);
                     
                     snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"charge\"}");
                     mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
@@ -516,7 +516,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                         system_state = ACT_STATE_GRID;
                         
                         LOG_INFO(">> STATE 3 ACTIVE: Grid Regime. Battery < 20%%.\n");
-                        leds_set(LEDS_NUM_TO_MASK(LEDS_RED));
+                        leds_set(LEDS_RED);
                         
                         snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"critical\"}");
                         mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
@@ -529,7 +529,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                         mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
                     } else {
                         /* Maintain State 2 */
-                        leds_set(LEDS_NUM_TO_MASK(LEDS_YELLOW));
+                        leds_set(LEDS_YELLOW);
                         snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
                         mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
                     }
@@ -541,7 +541,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                         system_state = ACT_STATE_BATT;
 
                         LOG_INFO(">> STATE 2 ACTIVE: Battery Regime Restored (SOC > 20%%).\n");
-                        leds_set(LEDS_NUM_TO_MASK(LEDS_YELLOW));
+                        leds_set(LEDS_YELLOW);
 
                         /* Send command to the battery to unlock it from the critical state */
                         snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
@@ -556,7 +556,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                     } 
                     else {
                         /* Maintain State 3 */ 
-                        leds_set(LEDS_NUM_TO_MASK(LEDS_RED));
+                        leds_set(LEDS_RED);
                         snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"critical\"}");
                         mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
                     }
@@ -571,10 +571,10 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
         
         if (current_soc > CRITICAL_SOC) {
           snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
-          leds_set(LEDS_NUM_TO_MASK(LEDS_YELLOW));
+          leds_set(LEDS_YELLOW);
         } else {
           snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"critical\"}");
-          leds_set(LEDS_NUM_TO_MASK(LEDS_RED));
+          leds_set(LEDS_RED);
         }
         mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
       }

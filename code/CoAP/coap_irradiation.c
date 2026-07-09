@@ -56,7 +56,7 @@ static void res_get_handler(coap_message_t *request, coap_message_t *response, u
   float current_irradiation = irradiation_array[current_step];
 
   int irr_int = (int)current_irradiation;
-  int irr_frac = (int)(fabs(current_irradiation - irr_int) * 10000);
+  int irr_frac = (int)(fabs(current_irradiation - irr_int) * 10000 + 0.5);
 
   //JSON formatting --> it uses %d.%04d because irradiation has 4 decimals in the dataset
   snprintf((char *)buffer, preferred_size, 
@@ -146,7 +146,7 @@ PROCESS_THREAD(coap_irradiation_process, ev, data)
 
         float val = irradiation_array[current_step];
         int val_int = (int)val;
-        int val_frac = (int)(fabs(val - val_int) * 10000);
+        int val_frac = (int)(fabs(val - val_int) * 10000 + 0.5);
 
         LOG_INFO("Simulated sampling: Step %d, Value: %d.%04d W/m2\n", current_step, val_int, val_frac);       
          

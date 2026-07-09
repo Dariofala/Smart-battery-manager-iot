@@ -127,7 +127,7 @@ PROCESS_THREAD(mqtt_temperature_process, ev, data)
       float current_temp = module_temp_array[current_step]; // Read temperature
       
       int temp_int = (int)current_temp;
-      int temp_frac = (int)(fabs(current_temp - temp_int) * 100);
+      int temp_frac = (int)(fabs(current_temp - temp_int) * 100 + 0.5);
 
       // Check if a significant change occurred
       if(fabs(current_temp - last_published_temp) >= TEMP_THRESHOLD || cycles_without_publish >= MAX_IDLE_CYCLES) {
