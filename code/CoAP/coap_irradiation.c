@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #include "contiki.h"
 #include "coap-engine.h"
 #include "coap-blocking-api.h" 
@@ -54,10 +55,13 @@ static void res_get_handler(coap_message_t *request, coap_message_t *response, u
   
   float current_irradiation = irradiation_array[current_step];
 
-  //JSON formatting --> it uses %.4f because irradiation has 4 decimals in the dataset
+  int irr_int = (int)current_irradiation;
+  int irr_frac = (int)(fabs(current_irradiation - irr_int) * 10000);
+
+  //JSON formatting --> it uses %d.%04d because irradiation has 4 decimals in the dataset
   snprintf((char *)buffer, preferred_size, 
-           "{\"bn\":\"nRF52840-SensorIrr\", \"n\":\"irradiation\", \"v\":%.4f, \"u\":\"W/m2\"}", 
-           current_irradiation);
+           "{\"bn\":\"nRF52840-SensorIrr\", \"n\":\"irradiation\", \"v\":%d.%04d, \"u\":\"W/m2\"}", 
+           irr_int, irr_frac);
 
   size_t len = strlen((char *)buffer);
   
@@ -140,8 +144,12 @@ PROCESS_THREAD(coap_irradiation_process, ev, data)
           current_step = 0; // Rewind the dataset at the end of the 150 steps
         }
 
-        LOG_INFO("Simulated sampling: Step %d, Value: %.2f W/m2\n", current_step, irradiation_array[current_step]);
-        
+        float val = irradiation_array[current_step];
+        int val_int = (int)val;
+        int val_frac = (int)(fabs(val - val_int) * 10000);
+
+        LOG_INFO("Simulated sampling: Step %d, Value: %d.%04d W/m2\n", current_step, val_int, val_frac);       
+         
         // Trigger the CoAP event. This single line implements the entire Observe pattern towards the Actuator/Cloud
         res_irradiation.trigger();
       }

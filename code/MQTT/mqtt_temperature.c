@@ -126,17 +126,20 @@ PROCESS_THREAD(mqtt_temperature_process, ev, data)
     if(state == STATE_CONNECTED) {
       float current_temp = module_temp_array[current_step]; // Read temperature
       
+      int temp_int = (int)current_temp;
+      int temp_frac = (int)(fabs(current_temp - temp_int) * 100);
+
       // Check if a significant change occurred
       if(fabs(current_temp - last_published_temp) >= TEMP_THRESHOLD || cycles_without_publish >= MAX_IDLE_CYCLES) {
         // JSON payload creation
         snprintf(app_buffer, APP_BUFFER_SIZE, 
-                 "{\"bn\":\"%s\", \"n\":\"module_temp\", \"v\":%.2f, \"u\":\"Cel\"}", 
-                 CLIENT_ID, current_temp);
+                 "{\"bn\":\"%s\", \"n\":\"module_temp\", \"v\":%d.%02d, \"u\":\"Cel\"}", 
+                 CLIENT_ID, temp_int, temp_frac);
         
         if(cycles_without_publish >= MAX_IDLE_CYCLES) {
             LOG_INFO("Security Heartbeat (45s), Publishing: %s\n", app_buffer);
         } else {
-            LOG_INFO("Variation (> %.1f C). Publishing: %s\n", TEMP_THRESHOLD, app_buffer);
+            LOG_INFO("Variation (> 0.5 C). Publishing: %s\n", app_buffer);
         }
         
         mqtt_publish(&conn, NULL, TOPIC_TEMPERATURE, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
@@ -146,7 +149,8 @@ PROCESS_THREAD(mqtt_temperature_process, ev, data)
         
       } else {
         cycles_without_publish++; /* Increase the counter of silences */
-        LOG_INFO("Step %d - Temp: %.2f C (Unchanged). Silence n.%d. Radio on sleep mode.\n", current_step, current_temp, cycles_without_publish);
+        LOG_INFO("Step %d - Temp: %d.%02d C (Unchanged). Silence n.%d. Radio on sleep mode.\n", 
+                 current_step, temp_int, temp_frac, cycles_without_publish);
       }
 
       current_step++;

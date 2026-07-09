@@ -173,7 +173,10 @@ static void notification_callback_power(coap_observee_t *obs, void *notification
     const uint8_t *payload = NULL;
     coap_get_payload(notification, &payload);
     current_power = extract_json_value((const char *)payload);
-    LOG_INFO("CoAP RX Power: %.2f W\n", current_power);
+
+    int p_int = (int)current_power;
+    int p_frac = (int)(fabs(current_power - p_int) * 100);
+    LOG_INFO("CoAP RX Power: %d.%02d W\n", p_int, p_frac);
     last_power_timestamp = clock_time();
   }
 }
@@ -183,7 +186,10 @@ static void notification_callback_irr(coap_observee_t *obs, void *notification, 
     const uint8_t *payload = NULL;
     coap_get_payload(notification, &payload);
     current_irr = extract_json_value((const char *)payload);
-    LOG_INFO("CoAP RX Irradiation: %.4f W/m2\n", current_irr);
+
+    int i_int = (int)current_irr;
+    int i_frac = (int)(fabs(current_irr - i_int) * 10000);
+    LOG_INFO("CoAP RX Irradiation: %d.%04d W/m2\n", i_int, i_frac);
     last_irr_timestamp = clock_time();
   }
 }
@@ -232,11 +238,15 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
       if(strstr(payload, "module_temp") != NULL) {
         current_temp = extract_json_value(payload);
         last_temp_timestamp = clock_time();
-        LOG_INFO("MQTT RX Temperature: %.2f C\n", current_temp);
+        int t_int = (int)current_temp;
+        int t_frac = (int)(fabs(current_temp - t_int) * 100);
+        LOG_INFO("MQTT RX Temperature: %d.%02d C\n", t_int, t_frac);
       } 
       else if (strstr(payload, "battery_soc") != NULL) {
         current_soc = extract_json_value(payload);
-        LOG_INFO("MQTT RX Battery SOC: %.1f%%\n", current_soc);
+        int s_int = (int)current_soc;
+        int s_frac = (int)(fabs(current_soc - s_int) * 10);
+        LOG_INFO("MQTT RX Battery SOC: %d.%d%%\n", s_int, s_frac);
       }
       break;
     }

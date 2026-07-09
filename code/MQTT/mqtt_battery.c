@@ -227,16 +227,19 @@ PROCESS_THREAD(mqtt_battery_process, ev, data)
 
       // 3. TELEMETRY PUBLICATION
       if(fabs(current_soc - last_published_soc) >= 1.0) {
+
+        int soc_int = (int)current_soc;
+        int soc_frac = (int)(current_soc * 10) % 10;
         
         snprintf(app_buffer, APP_BUFFER_SIZE, 
-                 "{\"bn\":\"%s\", \"n\":\"battery_soc\", \"v\":%.1f, \"u\":\"%%\"}", 
-                 CLIENT_ID, current_soc);
+                 "{\"bn\":\"%s\", \"n\":\"battery_soc\", \"v\":%d.%d, \"u\":\"%%\"}", 
+                 CLIENT_ID, soc_int, soc_frac);
         
         char* state_str = (batt_state == BATT_STATE_CHARGING) ? "Charge" : 
                           (batt_state == BATT_STATE_DISCHARGING) ? "Discharge" : "Critical/Halted";
                           
-        LOG_INFO("State: %.1f%% (%s). Publishing to %s\n", 
-                 current_soc, state_str, TOPIC_BATTERY);
+        LOG_INFO("State: %d.%d%% (%s). Publishing to %s\n", 
+                 soc_int, soc_frac, state_str, TOPIC_BATTERY);
         
         mqtt_publish(&conn, NULL, TOPIC_BATTERY, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
         

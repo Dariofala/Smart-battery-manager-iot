@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #include "contiki.h"
 #include "coap-engine.h"
 #include "coap-blocking-api.h" 
@@ -54,10 +55,13 @@ static void res_get_handler(coap_message_t *request, coap_message_t *response, u
   
   float current_power = ac_power_array[current_step];
 
-  //JSON formatting --> it uses %.2f because power has 2 decimals in the dataset
+  int p_int = (int)current_power;
+  int p_frac = (int)(fabs(current_power - p_int) * 100);
+
+  //JSON formatting --> it uses %d.%02d because power has 2 decimals in the dataset
   snprintf((char *)buffer, preferred_size, 
-           "{\"bn\":\"nRF52840-SensorPower\", \"n\":\"ac_power\", \"v\":%.2f, \"u\":\"W\"}", 
-           current_power);
+           "{\"bn\":\"nRF52840-SensorPower\", \"n\":\"ac_power\", \"v\":%d.%02d, \"u\":\"W\"}", 
+           p_int, p_frac);
 
   size_t len = strlen((char *)buffer);
   
@@ -141,8 +145,12 @@ PROCESS_THREAD(coap_sensor_process, ev, data)
           current_step = 0; // Rewind the dataset at the end of the 150 steps
         }
 
-        LOG_INFO("Simulated sampling: Step %d, Value: %.2f W\n", current_step, ac_power_array[current_step]);
-        
+        float val = ac_power_array[current_step];
+        int val_int = (int)val;
+        int val_frac = (int)(fabs(val - val_int) * 100);
+
+        LOG_INFO("Simulated sampling: Step %d, Value: %d.%02d W\n", current_step, val_int, val_frac);
+                
         // Trigger the CoAP event. This single line implements the entire Observe pattern towards the Actuator/Cloud
         res_power.trigger();
       }
