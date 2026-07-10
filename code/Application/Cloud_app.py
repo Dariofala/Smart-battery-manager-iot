@@ -202,6 +202,7 @@ class RegistrationResource(resource.Resource):
                 return aiocoap.Message(code=aiocoap.BAD_REQUEST, payload=b"Unknown node type")
         except json.JSONDecodeError:
             log_print("[ERROR] Invalid registration payload.")
+            return aiocoap.Message(code=aiocoap.BAD_REQUEST, payload=b"Invalid JSON payload")
 
         return aiocoap.Message(code=aiocoap.CREATED, payload=b"Registration OK")
     
