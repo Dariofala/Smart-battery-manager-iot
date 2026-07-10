@@ -38,10 +38,72 @@ registered_nodes = {
     "sensors": {}      # Sensors and their address: {"power": "...", "irradiation": "..."}
 }
 
+# Numeric codes for the system state, used to plot a clean step-chart in Grafana
+STATE_CODES = {
+    "STATE 1: PV Regime": 1,
+    "STATE 2: Battery Regime": 2,
+    "STATE 3: Grid Regime": 3,
+    "EMERGENCY: Safe Mode Active": 0,
+}
+
 # Helper function to print logs only if 'show' mode is active
 def log_print(msg):
     if display_mode == "show":
         print(msg)
+
+# INFLUXDB WRITE HELPERS
+
+def write_measurement(device, measurement_type, value, extra_tags=None):
+    # Safely write a numeric point into the 'iot_sensors' measurement.
+    # Wrapped in try/except so a DB failure never breaks an MQTT/CoAP callback.
+    try:
+        point = (Point("iot_sensors")
+                 .tag("device", device)
+                 .tag("measurement_type", measurement_type)
+                 .field("value", float(value)))
+        if extra_tags:
+            for k, v in extra_tags.items():
+                point = point.tag(k, v)
+        write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
+    except Exception as e:
+        log_print(f"[INFLUX ERROR] write failed for {device}/{measurement_type}: {e}")
+
+
+def write_event(category, message, state=None):
+    # Write a discrete event (alarm, state transition, command) into a
+    # separate 'iot_events' measurement, so dashboards can annotate the timeline
+    # without mixing events into the continuous sensor series.
+    try:
+        point = (Point("iot_events")
+                 .tag("category", category)          # "alarm" | "state" | "command"
+                 .field("message", str(message)))
+        if state is not None:
+            point = point.tag("state", str(state))
+        write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
+    except Exception as e:
+        log_print(f"[INFLUX ERROR] event write failed: {e}")
+
+
+def persist_registration(node_id, node_type, endpoint):
+    # Persist the node directory into the 'registry' measurement, so the list of
+    # registered sensors/actuators lives in the database (not only in RAM)
+    try:
+        point = (Point("registry")
+                 .tag("node_id", node_id)
+                 .tag("node_type", node_type)
+                 .field("endpoint", str(endpoint)))
+        write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
+    except Exception as e:
+        log_print(f"[INFLUX ERROR] registry write failed: {e}")
+
+
+def set_system_state(state_label):
+    # Update the in-RAM state (for the CLI table) and persist it to InfluxDB
+    # both as a numeric code (for step-charts) and as an event (for the timeline)
+    latest_data["systemState"] = state_label
+    code = STATE_CODES.get(state_label, -1)
+    write_measurement("system", "system_state_code", code, extra_tags={"label": state_label})
+    write_event("state", state_label, state=state_label)
 
 # MODULE 1: MQTT MANAGEMENT (Background Thread)
 def on_connect(client, userdata, flags, rc, properties):
@@ -51,7 +113,6 @@ def on_connect(client, userdata, flags, rc, properties):
 
 def on_message(client, userdata, msg):
     payload = msg.payload.decode('utf-8')
-    topic = msg.topic
     
     try:
         data = json.loads(payload)
@@ -70,33 +131,38 @@ def on_message(client, userdata, msg):
                 latest_data["battery"] = value
             elif measurement == "module_temp":
                 latest_data["temperature"] = value
-            elif measurement == "system_state":
-                latest_data["systemState"] = data.get("vs", "Unknown") # If actuator sends state as string
             elif measurement == "prediction":
                 latest_data["lastPrediction"] = value
+            elif measurement == "system_state":
+                # Only if the firmware publishes the state as SenML numeric value
+                set_system_state(data.get("vs", "Unknown"))
             
             # DB Write
-            point = Point("iot_sensors").tag("device", device).tag("measurement_type", measurement).field("value", value)
-            write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
+            write_measurement(device, measurement, value)
             
         # 2. Parsing Alarms & Info from the Smart Actuator
         elif "alarm" in data or "info" in data:
             msg_text = data.get("alarm", data.get("info", ""))
             log_print(f"\n[ACTUATOR MSG] {msg_text}\n")
             
-            # Try to infer system state from alarm text for the table if not sent explicitly
+            # Persist the raw actuator message as a discrete event
+            write_event("alarm", msg_text)
+            
+            # Infer system state from alarm text and persist it (state is not sent explicitly)
             if "Battery Mode" in msg_text or "Collapse" in msg_text:
-                latest_data["systemState"] = "STATE 2: Battery Regime"
+                set_system_state("STATE 2: Battery Regime")
             elif "National Grid" in msg_text:
-                latest_data["systemState"] = "STATE 3: Grid Regime"
+                set_system_state("STATE 3: Grid Regime")
             elif "PV Mode" in msg_text:
-                latest_data["systemState"] = "STATE 1: PV Regime"
+                set_system_state("STATE 1: PV Regime")
             elif "SAFE MODE" in msg_text:
-                inferred_state = "EMERGENCY: Safe Mode Active"
+                set_system_state("EMERGENCY: Safe Mode Active")
                 
         # 3. Parsing Commands
         elif "cmd" in data:
             log_print(f"[MQTT COMMAND] Action requested to the battery: {data['cmd']}")
+            # Persist the command as an event, useful to correlate control actions in Grafana
+            write_event("command", data["cmd"])
             
     except json.JSONDecodeError:
         log_print(f"[MQTT ERROR] Received non-JSON payload: {payload}")
@@ -138,8 +204,7 @@ async def observe_sensor(client_ip, node_id, node_type):
                     latest_data["irradiation"] = val
                 
                 # DB Write
-                point = Point("iot_sensors").tag("device", node_id).tag("measurement_type", measurement_name).field("value", val)
-                write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
+                write_measurement(node_id, measurement_name, val)
             except Exception as e:
                 log_print(f"[CoAP INFLUX ERROR] Failed DB insert: {e}")
             
@@ -179,6 +244,9 @@ class RegistrationResource(resource.Resource):
                 registered_nodes["actuator"] = client_ip
                 log_print(f"Actuator '{node_id}' successfully mapped to IP: {client_ip}")
                 
+                # Persist the actuator into the node directory in the database
+                persist_registration(node_id, "actuator", f"coap://[{client_ip}]:5683")
+                
                 # If there are already sensors registered we send their IP to the actuator
                 asyncio.create_task(self.flush_pending_sensors())
 
@@ -196,6 +264,10 @@ class RegistrationResource(resource.Resource):
                 sensor_endpoint = f"coap://[{client_ip}]:5683"
                 registered_nodes["sensors"][node_type] = sensor_endpoint
                 log_print(f"Sensor '{node_id}' successfully mapped, endpoint: {sensor_endpoint}")
+                
+                # Persist the sensor into the node directory in the database
+                persist_registration(node_id, node_type, sensor_endpoint)
+                
                 if registered_nodes["actuator"]:
                     asyncio.create_task(self.notify_actuator(node_type, sensor_endpoint))
             else:
@@ -362,6 +434,8 @@ async def main():
     finally:
         mqtt_client.loop_stop()
         mqtt_client.disconnect()
+        write_api.flush()
+        write_api.close()
         client_db.close()
 
 if __name__ == "__main__":
