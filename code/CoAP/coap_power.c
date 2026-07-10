@@ -142,7 +142,7 @@ PROCESS_THREAD(coap_sensor_process, ev, data)
         
         current_step++;
         if(current_step >= REPLAY_STEPS) {
-          current_step = 0; // Rewind the dataset at the end of the 150 steps
+          current_step = 0; // Rewind the dataset at the end of the 200 steps
         }
 
         float val = ac_power_array[current_step];

@@ -227,8 +227,12 @@ class RegistrationResource(resource.Resource):
             log_print(f"Failed to notify actuator at [{actuator_ip}]: {str(e)}")
 
     async def flush_pending_sensors(self):
-        for sensor_type, sensor_endpoint in registered_nodes["sensors"].items():
-            await self.notify_actuator(sensor_type, sensor_endpoint)
+        tasks = [
+            self.notify_actuator(sensor_type, sensor_endpoint)
+            for sensor_type, sensor_endpoint in registered_nodes["sensors"].items()
+        ]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 # MODULE 4: CLI HELPERS
 def print_menu():
