@@ -68,7 +68,7 @@ static bool first_cycle_done = false;
 static uint32_t last_temp_timestamp = 0;
 static uint32_t last_power_timestamp = 0;
 static uint32_t last_irr_timestamp = 0;
-#define SAFE_MODE_TIMEOUT (60 * CLOCK_SECOND)
+#define SAFE_MODE_TIMEOUT (90 * CLOCK_SECOND)
 
 /* --- FSM (Finite State Machine) Configurations --- */
 #define ACT_STATE_PV    1
@@ -231,7 +231,10 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
           leds_single_on(LEDS_YELLOW);
           
           snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
-          mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+          status = mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+          if(status != MQTT_STATUS_OK) {
+            LOG_ERR("Publish 1 failed on %s, status=%d\n", TOPIC_COMMANDS, status);
+          }
         }
         break;
       }
@@ -308,14 +311,20 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                 
                 /* Send command to the battery to unlock it from the critical state */
                 snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
-                mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
-                
+                status = mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                if(status != MQTT_STATUS_OK) {
+                    LOG_ERR("Publish 2 failed on %s, status=%d\n", TOPIC_COMMANDS, status);
+                }
+
                 /* Timer to clear the MQTT outbound queue before sending the alarm message */
                 etimer_set(&spacing_timer, CLOCK_SECOND / 2);
                 PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
 
                 snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"MANUAL OVERRIDE: Actuator button pressed. Entering Battery Mode.\"}");
-                mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                status = mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                if(status != MQTT_STATUS_OK) {
+                    LOG_ERR("Publish 3 failed on %s, status=%d\n", TOPIC_ALARMS, status);
+                }
             }
         }
     }
@@ -422,14 +431,19 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                 leds_single_on(LEDS_YELLOW);
                 
                 snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
-                mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
-                            
+                status = mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                if(status != MQTT_STATUS_OK) {
+                  LOG_ERR("Publish 4 failed on %s, status=%d\n", TOPIC_COMMANDS, status);
+                }            
                 // Timer to clear the MQTT outbound queue before sending the alarm message
                 etimer_set(&spacing_timer, CLOCK_SECOND / 2);
                 PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
 
                 snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"Collapse predicted. Entering Battery Mode.\"}");
-                mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                status = mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                if(status != MQTT_STATUS_OK) {
+                  LOG_ERR("Publish 5 failed on %s, status=%d\n", TOPIC_ALARMS, status);
+                }
             } else if (current_power < PV_THRESHOLD) {
               /* TRANSITION 1 -> 2: not enough power generation */
                 system_state = ACT_STATE_BATT;
@@ -440,21 +454,30 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                 leds_single_on(LEDS_YELLOW);
                 
                 snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
-                mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
-                
+                status = mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                if(status != MQTT_STATUS_OK) {
+                  LOG_ERR("Publish 6 failed on %s, status=%d\n", TOPIC_COMMANDS, status);
+                }
+
                 // Timer to clear the MQTT outbound queue before sending the alarm message
                 etimer_set(&spacing_timer, CLOCK_SECOND / 2);
                 PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
 
                 snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"Not enough power generation. Entering Battery Mode.\"}");
-                mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                status = mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                if(status != MQTT_STATUS_OK) {
+                  LOG_ERR("Publish 7 failed on %s, status=%d\n", TOPIC_ALARMS, status);
+                } 
             } else {
                 /* Maintain State 1 */
                 leds_off(LEDS_ALL);
                 leds_on(LEDS_GREEN);
                 snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"charge\"}");
                 LOG_INFO("Maintaining PV Regime. Sending charge command to battery.\n");
-                mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                status = mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                if(status != MQTT_STATUS_OK) {
+                  LOG_ERR("Publish 8 failed on %s, status=%d\n", TOPIC_COMMANDS, status);
+                }
             }
         }
         
@@ -493,7 +516,10 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                         leds_off(LEDS_ALL);
                         leds_single_on(LEDS_YELLOW);
                         snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
-                        mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                        status = mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                        if(status != MQTT_STATUS_OK) {
+                          LOG_ERR("Publish 9 failed on %s, status=%d\n", TOPIC_COMMANDS, status);
+                        }
                     }
                 } 
                 else {
@@ -506,14 +532,20 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                     leds_on(LEDS_GREEN);
                     
                     snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"charge\"}");
-                    mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                    status = mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                    if(status != MQTT_STATUS_OK) {
+                      LOG_ERR("Publish 10 failed on %s, status=%d\n", TOPIC_COMMANDS, status);
+                    }
 
                     // Timer to clear the MQTT outbound queue before sending the alarm message
                     etimer_set(&spacing_timer, CLOCK_SECOND / 2);
                     PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
 
                     snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"info\":\"PV production sufficient. Entering PV Mode.\"}");
-                    mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                    status = mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                    if(status != MQTT_STATUS_OK) {
+                      LOG_ERR("Publish 11 failed on %s, status=%d\n", TOPIC_ALARMS, status);
+                    }
                 }
             }
             else {
@@ -528,20 +560,29 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                         leds_on(LEDS_RED);
                         
                         snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"critical\"}");
-                        mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                        status = mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                        if(status != MQTT_STATUS_OK) {
+                          LOG_ERR("Publish 12 failed on %s, status=%d\n", TOPIC_COMMANDS, status);
+                        }
 
                         // Timer to clear the MQTT outbound queue before sending the alarm message
                         etimer_set(&spacing_timer, CLOCK_SECOND / 2);
                         PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
 
                         snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"Battery critical (< 20%%). Switching to National Grid.\"}");
-                        mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                        status = mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                        if(status != MQTT_STATUS_OK) {
+                          LOG_ERR("Publish 13 failed on %s, status=%d\n", TOPIC_ALARMS, status);
+                        }
                     } else {
                         /* Maintain State 2 */
                         leds_off(LEDS_ALL);
                         leds_single_on(LEDS_YELLOW);
                         snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
-                        mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                        status = mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                        if(status != MQTT_STATUS_OK) {
+                          LOG_ERR("Publish 14 failed on %s, status=%d\n", TOPIC_COMMANDS, status);
+                        }
                     }
                 } 
                 else if (system_state == ACT_STATE_GRID) {
@@ -556,21 +597,30 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
 
                         /* Send command to the battery to unlock it from the critical state */
                         snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
-                        mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                        status = mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                        if(status != MQTT_STATUS_OK) {
+                          LOG_ERR("Publish 15 failed on %s, status=%d\n", TOPIC_COMMANDS, status);
+                        }
 
                         /* Timer to clear the MQTT outbound queue before sending the alarm message */
                         etimer_set(&spacing_timer, CLOCK_SECOND / 2);
                         PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
 
                         snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"info\":\"Battery SOC restored. Resuming Battery Mode.\"}");
-                        mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                        status = mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                        if(status != MQTT_STATUS_OK) {
+                          LOG_ERR("Publish 16 failed on %s, status=%d\n", TOPIC_ALARMS, status);
+                        }
                     } 
                     else {
                         /* Maintain State 3 */ 
                         leds_off(LEDS_ALL);
                         leds_on(LEDS_RED);
                         snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"critical\"}");
-                        mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                        status = mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+                        if(status != MQTT_STATUS_OK) {
+                          LOG_ERR("Publish 17 failed on %s, status=%d\n", TOPIC_COMMANDS, status);
+                        }
                     }
                 }
             }
@@ -590,13 +640,19 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
           leds_off(LEDS_ALL);
           leds_on(LEDS_RED);
         }
-        mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+        status = mqtt_publish(&conn, NULL, TOPIC_COMMANDS, (uint8_t *)sensors_buffer, strlen(sensors_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+        if(status != MQTT_STATUS_OK) {
+          LOG_ERR("Publish 18 failed on %s, status=%d\n", TOPIC_COMMANDS, status);
+        }
 
         etimer_set(&spacing_timer, CLOCK_SECOND / 2);
         PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
 
         snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"SAFE MODE ON: Sensor timeout detected. Emergency regime active.\"}");
-        mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+        status = mqtt_publish(&conn, NULL, TOPIC_ALARMS, (uint8_t *)alarms_buffer, strlen(alarms_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+        if(status != MQTT_STATUS_OK) {
+          LOG_ERR("Publish 19 failed on %s, status=%d\n", TOPIC_ALARMS, status);
+        }
       }
 
       /* Update variables for the next cycle */
