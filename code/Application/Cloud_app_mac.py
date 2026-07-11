@@ -33,22 +33,76 @@ latest_data = {
     "battery": 0.0
 }
 
+# Global data structure to memorize registered nodes
+registered_nodes = {
+    "actuator": None,  # Address of actuator node
+    "sensors": {}      # Sensors and their address: {"power": "...", "irradiation": "..."}
+}
+
+# Numeric codes for the system state, used to plot a clean step-chart in Grafana
+STATE_CODES = {
+    "STATE 1: PV Regime": 1,
+    "STATE 2: Battery Regime": 2,
+    "STATE 3: Grid Regime": 3,
+    "EMERGENCY: Safe Mode Active": 0,
+}
+
 # Helper function to print logs only if 'show' mode is active
 def log_print(msg):
     if display_mode == "show":
         print(msg)
 
+# INFLUXDB WRITE HELPERS
+
+def write_measurement(device, measurement_type, value, extra_tags=None):
+    try:
+        point = (Point("iot_sensors")
+                 .tag("device", device)
+                 .tag("measurement_type", measurement_type)
+                 .field("value", float(value)))
+        if extra_tags:
+            for k, v in extra_tags.items():
+                point = point.tag(k, v)
+        write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
+    except Exception as e:
+        log_print(f"[INFLUX ERROR] write failed for {device}/{measurement_type}: {e}")
+
+def write_event(category, message, state=None):
+    try:
+        point = (Point("iot_events")
+                 .tag("category", category)
+                 .field("message", str(message)))
+        if state is not None:
+            point = point.tag("state", str(state))
+        write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
+    except Exception as e:
+        log_print(f"[INFLUX ERROR] event write failed: {e}")
+
+def persist_registration(node_id, node_type, endpoint):
+    try:
+        point = (Point("registry")
+                 .tag("node_id", node_id)
+                 .tag("node_type", node_type)
+                 .field("endpoint", str(endpoint)))
+        write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
+    except Exception as e:
+        log_print(f"[INFLUX ERROR] registry write failed: {e}")
+
+def set_system_state(state_label):
+    latest_data["systemState"] = state_label
+    code = STATE_CODES.get(state_label, -1)
+    write_measurement("system", "system_state_code", code, extra_tags={"label": state_label})
+    write_event("state", state_label, state=state_label)
+
 # MODULE 1: MQTT MANAGEMENT (Background Thread)
 def on_connect(client, userdata, flags, rc, properties):
     log_print(f"[MQTT] Connected to local Mosquitto broker (Code: {rc})")
-    # Subscribe to the topics defined in the C firmware
     client.subscribe("network/#")
 
 def on_message(client, userdata, msg):
     payload = msg.payload.decode('utf-8')
-    topic = msg.topic
-
-    # FIX MAC
+    
+    # FIX MAC: Convert commas to dots for float parsing
     payload = re.sub(r'(\d+),(\d+)', r'\1.\2', payload)
     
     try:
@@ -63,46 +117,51 @@ def on_message(client, userdata, msg):
             
             log_print(f"[MQTT TELEMETRY] {device} -> {measurement}: {value} {unit}")
             
-            # Update the latest_data dictionary for the table
             if measurement == "battery_soc":
                 latest_data["battery"] = value
             elif measurement == "module_temp":
                 latest_data["temperature"] = value
-            elif measurement == "system_state":
-                latest_data["systemState"] = data.get("vs", "Unknown") # If actuator sends state as string
             elif measurement == "prediction":
                 latest_data["lastPrediction"] = value
+            elif measurement == "system_state":
+                set_system_state(data.get("vs", "Unknown"))
             
-            # DB Write
-            point = Point("iot_sensors").tag("device", device).tag("measurement_type", measurement).field("value", value)
-            write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
+            write_measurement(device, measurement, value)
             
         # 2. Parsing Alarms & Info from the Smart Actuator
         elif "alarm" in data or "info" in data:
             msg_text = data.get("alarm", data.get("info", ""))
             log_print(f"\n[ACTUATOR MSG] {msg_text}\n")
             
-            # Try to infer system state from alarm text for the table if not sent explicitly
+            # Persist the raw actuator message as a discrete event            
+            write_event("alarm", msg_text)
+            
             if "Battery Mode" in msg_text or "Collapse" in msg_text:
-                latest_data["systemState"] = "STATE 2: Battery Regime"
+                set_system_state("STATE 2: Battery Regime")
             elif "National Grid" in msg_text:
-                latest_data["systemState"] = "STATE 3: Grid Regime"
+                set_system_state("STATE 3: Grid Regime")
             elif "PV Mode" in msg_text:
-                latest_data["systemState"] = "STATE 1: PV Regime"
+                set_system_state("STATE 1: PV Regime")
+            elif "SAFE MODE" in msg_text:
+                set_system_state("EMERGENCY: Safe Mode Active")
                 
         # 3. Parsing Commands
         elif "cmd" in data:
             log_print(f"[MQTT COMMAND] Action requested to the battery: {data['cmd']}")
+            write_event("command", data["cmd"])
             
     except json.JSONDecodeError:
         log_print(f"[MQTT ERROR] Received non-JSON payload: {payload}")
 
+# CoAP client Context reusable for all the output requests
+coap_client_context = None
 
 # MODULE 2: CoAP CLIENT (Observe Setup)
 active_observes = {}
 
 async def observe_sensor(client_ip, node_id, node_type):
-    protocol = await aiocoap.Context.create_client_context()
+    global coap_client_context
+    protocol = coap_client_context
     resource_path = "telemetry/power" if node_type == "power" else "telemetry/irradiation"
     uri = f"coap://[{client_ip}]:5683/{resource_path}"
     
@@ -116,8 +175,8 @@ async def observe_sensor(client_ip, node_id, node_type):
         while True:
             response = await asyncio.wait_for(observation_iterator.__anext__(), timeout=60.0)
             payload = response.payload.decode('utf-8')
-
-            # FIX MAC
+            
+            # FIX MAC: Convert commas to dots for float parsing
             payload = re.sub(r'(\d+),(\d+)', r'\1.\2', payload)
             
             log_print(f"[CoAP TELEMETRY] {node_id} ({client_ip}): {payload}")
@@ -127,15 +186,12 @@ async def observe_sensor(client_ip, node_id, node_type):
                 val = float(data.get("v", 0.0))
                 measurement_name = data.get("n", "unknown")
                 
-                # Update data for the table
                 if node_type == "power":
                     latest_data["AC_Power"] = val
                 elif node_type == "irradiation":
                     latest_data["irradiation"] = val
                 
-                # DB Write
-                point = Point("iot_sensors").tag("device", node_id).tag("measurement_type", measurement_name).field("value", val)
-                write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
+                write_measurement(node_id, measurement_name, val)
             except Exception as e:
                 log_print(f"[CoAP INFLUX ERROR] Failed DB insert: {e}")
             
@@ -153,39 +209,79 @@ class RegistrationResource(resource.Resource):
     async def render_post(self, request):
         payload = request.payload.decode('utf-8')
         
-        # Cross-platform IP extraction
         if hasattr(request.remote, 'sockaddr'):
-            client_ip = request.remote.sockaddr[0]  # for Ubuntu/Linux
+            client_ip = request.remote.sockaddr[0]
         elif hasattr(request.remote, 'address'):
-            client_ip = request.remote.address[0]   # for macOS
+            client_ip = request.remote.address[0]
         else:
             client_ip = "Unknown"
         
         try:
             data = json.loads(payload)
-            # The C node must send a JSON like: {"id": "nRF52840-Power", "type": "power"}
             node_id = data.get("id", "Unknown")
             node_type = data.get("type", "Unknown")
+            if not node_id or not node_type:
+                return aiocoap.Message(code=aiocoap.BAD_REQUEST, payload=b"Missing node_id or type")
             
             log_print(f"\n[CoAP REGISTRATION] Received from {node_id} (IP: {client_ip})")
             
-            if node_type in ["power", "irradiation"]:
+            if node_type == "actuator":
+                registered_nodes["actuator"] = client_ip
+                log_print(f"Actuator '{node_id}' successfully mapped to IP: {client_ip}")
+                
+                persist_registration(node_id, "actuator", f"coap://[{client_ip}]:5683")
+                asyncio.create_task(self.flush_pending_sensors())
+
+            elif node_type in ["power", "irradiation"]:
                 if node_id in active_observes:
-                    # old_ip = active_observes[node_id]['ip']
-                    log_print(f"[CoAP RECOVERY] Node {node_id} IP changed. Reconnecting...")
-                    # Kill the old task that was listening to the dead IP
+                    log_print(f"[CoAP RECOVERY] Node {node_id} IP may be different. Reconnecting...")
                     active_observes[node_id]['task'].cancel()
                     
-                # Create the new task pointing to the NEW IP, but save it using the ID
                 task = asyncio.create_task(observe_sensor(client_ip, node_id, node_type))
-                # Save both the task and the IP for diagnostics
                 active_observes[node_id] = {'task': task, 'ip': client_ip}
+
+                sensor_endpoint = f"coap://[{client_ip}]:5683"
+                registered_nodes["sensors"][node_type] = sensor_endpoint
+                log_print(f"Sensor '{node_id}' successfully mapped, endpoint: {sensor_endpoint}")
                 
+                persist_registration(node_id, node_type, sensor_endpoint)
+                
+                if registered_nodes["actuator"]:
+                    asyncio.create_task(self.notify_actuator(node_type, sensor_endpoint))
+            else:
+                return aiocoap.Message(code=aiocoap.BAD_REQUEST, payload=b"Unknown node type")
         except json.JSONDecodeError:
             log_print("[ERROR] Invalid registration payload.")
+            return aiocoap.Message(code=aiocoap.BAD_REQUEST, payload=b"Invalid JSON payload")
 
         return aiocoap.Message(code=aiocoap.CREATED, payload=b"Registration OK")
+    
+    async def notify_actuator(self, sensor_type, sensor_endpoint):
+        actuator_ip = registered_nodes["actuator"]
+        if not actuator_ip:
+            return
 
+        actuator_url = f"coap://[{actuator_ip}]:5683/control/register_sensor"
+        payload_bytes = json.dumps({"type": sensor_type, "endpoint": sensor_endpoint}).encode('utf-8')
+
+        log_print(f"Pushing sensor endpoint to actuator at {actuator_url}...")
+        
+        try:
+            request = aiocoap.Message(code=aiocoap.POST, uri=actuator_url, payload=payload_bytes)
+            response = await asyncio.wait_for(coap_client_context.request(request).response, timeout=10.0)
+            log_print(f"Actuator response to sensor mapping: {response.code}")
+        except asyncio.TimeoutError:
+            log_print(f"[TIMEOUT] Actuator at [{actuator_ip}] did not respond in time.")
+        except Exception as e:
+            log_print(f"Failed to notify actuator at [{actuator_ip}]: {str(e)}")
+
+    async def flush_pending_sensors(self):
+        tasks = [
+            self.notify_actuator(sensor_type, sensor_endpoint)
+            for sensor_type, sensor_endpoint in registered_nodes["sensors"].items()
+        ]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 # MODULE 4: CLI HELPERS
 def print_menu():
@@ -201,7 +297,6 @@ def print_menu():
     print("===========================================")
 
 async def table_renderer():
-    """Async task that continuously redraws the table until cancelled."""
     try:
         while display_mode == "table":
             os.system('cls' if os.name == 'nt' else 'clear')
@@ -217,10 +312,9 @@ async def table_renderer():
             print(f" Battery SOC     : {latest_data['battery']:.1f} %")
             print("======================================================")
             print("\n>>> Press ENTER to return to the main menu... <<<")
-            await asyncio.sleep(1) # Refresh every second
+            await asyncio.sleep(1)
     except asyncio.CancelledError:
-        pass # Clean exit when the task is cancelled
-
+        pass
 
 # MAIN LOOP: MULTI-PROTOCOL ORCHESTRATION
 async def main():
@@ -236,22 +330,21 @@ async def main():
     
     try:
         mqtt_client.connect("127.0.0.1", 1883, 60)
-        # loop_start() handles MQTT in a separate background thread without blocking asyncio
         mqtt_client.loop_start() 
     except ConnectionRefusedError:
         print("[ERROR] Local MQTT broker not found. Ensure Mosquitto is running.")
+    
+    # creating coap_client Context
+    global coap_client_context
+    coap_client_context = await aiocoap.Context.create_client_context()
 
     # 2. CoAP Server Initialization
     root = resource.Site()
-    # Map the registration resource to the URI 'coap://localhost/registration'
     root.add_resource(['registration'], RegistrationResource())
     
-    # Start the server context
-    # await aiocoap.Context.create_server_context(root, bind=("127.0.0.1", 5683)) # Old
-    await aiocoap.Context.create_server_context(root, bind=("fd00::1", 5683)) # New for Mac
-    # await aiocoap.Context.create_server_context(root, bind=("::", 5683)) # Not for Mac
-
-    log_print("[CoAP] Server listening on standard port 5683...\n")
+    # Start the server context with MAC IPv6 fix
+    await aiocoap.Context.create_server_context(root, bind=("fd00::1", 5683))
+    log_print("[CoAP] Server listening on standard port 5683 (fd00::1)...\n")
 
     ALARM_TOPIC = "network/alarms" 
     COMMANDS_TOPIC = "network/commands/battery"
@@ -261,7 +354,6 @@ async def main():
         while True:
             if display_mode == "menu":
                 print_menu()
-                # Wait for user input asynchronously (does not block CoAP operations)
                 command = await asyncio.to_thread(input, "Enter command: ")
                 command = command.strip().lower()
 
@@ -269,18 +361,15 @@ async def main():
                     display_mode = "show"
                     print("\n[INFO] Real-time logs ENABLED.")
                     print(">>> Press ENTER to stop and return to menu... <<<\n")
-                    # Wait for the user to press Enter to stop
                     await asyncio.to_thread(input, "")
                     display_mode = "menu"
 
                 elif command == "table":
                     display_mode = "table"
-                    # Start the background table renderer
                     table_task = asyncio.create_task(table_renderer())
-                    # Wait for user input to stop it
                     await asyncio.to_thread(input, "")
                     display_mode = "menu"
-                    table_task.cancel() # Stop the background printing
+                    table_task.cancel()
 
                 elif command == "alarm":
                     payload = json.dumps({"alarm": "Simulating Power collapse"})
@@ -292,7 +381,6 @@ async def main():
                         num_str = command.split(" ")[1]
                         num = float(num_str)
                         if 0.0 <= num <= 100.0:
-                            # Building a JSON SenML valid for C parsing
                             payload = json.dumps({"bn": "cli", "n": "battery_soc", "v": num})
                             mqtt_client.publish(COMMANDS_TOPIC, payload)
                             print(f"\n> [CLI] Sent Battery SOC override: {num}%\n")
@@ -314,6 +402,8 @@ async def main():
     finally:
         mqtt_client.loop_stop()
         mqtt_client.disconnect()
+        write_api.flush()
+        write_api.close()
         client_db.close()
 
 if __name__ == "__main__":
