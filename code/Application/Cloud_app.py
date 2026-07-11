@@ -347,6 +347,8 @@ async def main():
     print("  Starting Smart Battery Manager - Cloud App      ")
     print("==================================================\n")
     global display_mode
+
+    set_system_state("STATE 1: PV Regime") #Starting State
     
     # 1. MQTT Client Initialization
     mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)   

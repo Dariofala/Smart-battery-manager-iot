@@ -5,8 +5,8 @@
     "name": "adp8kqt",
     "namespace": "default",
     "uid": "cd194c33-df0a-4a2b-8adb-380c475812da",
-    "resourceVersion": "1783674466474999",
-    "generation": 4,
+    "resourceVersion": "1783757356239000",
+    "generation": 7,
     "creationTimestamp": "2026-07-10T08:55:26Z",
     "labels": {
       "grafana.app/deprecatedInternalID": "2961245510561792"
@@ -16,7 +16,7 @@
       "grafana.app/folder": "",
       "grafana.app/saved-from-ui": "Grafana v13.1.0 (Homebrew)",
       "grafana.app/updatedBy": "user:cfmtp61mzc8aoe",
-      "grafana.app/updatedTimestamp": "2026-07-10T09:07:46Z"
+      "grafana.app/updatedTimestamp": "2026-07-11T08:09:16Z"
     }
   },
   "spec": {
@@ -66,7 +66,7 @@
                         "name": "cfmtpaqbfhxq8d"
                       },
                       "spec": {
-                        "query": "from(bucket: \"sensors\")\r\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\r\n  |> filter(fn: (r) => r._measurement == \"iot_sensors\")\r\n  |> filter(fn: (r) => r.measurement_type == \"system_state_code\")\r\n  |> filter(fn: (r) => r._field == \"value\")"
+                        "query": "from(bucket: \"sensors\")\r\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\r\n  |> filter(fn: (r) => r._measurement == \"iot_sensors\")\r\n  |> filter(fn: (r) => r.measurement_type == \"system_state_code\")\r\n  |> filter(fn: (r) => r._field == \"value\")\r\n  |> aggregateWindow(every: v.windowPeriod, fn: last, createEmpty: true)\r\n  |> fill(usePrevious: true)"
                       }
                     },
                     "refId": "A",
@@ -80,24 +80,22 @@
           },
           "vizConfig": {
             "kind": "VizConfig",
-            "group": "state-timeline",
+            "group": "timeseries",
             "version": "13.1.0",
             "spec": {
               "options": {
-                "alignValue": "left",
                 "annotations": {
                   "clustering": -1,
                   "multiLane": false
                 },
                 "legend": {
+                  "calcs": [],
                   "displayMode": "list",
+                  "enableFacetedFilter": false,
                   "overflow": "ellipsis",
                   "placement": "bottom",
                   "showLegend": true
                 },
-                "mergeValues": true,
-                "rowHeight": 0.9,
-                "showValue": "auto",
                 "tooltip": {
                   "hideZeros": false,
                   "mode": "single",
@@ -106,6 +104,8 @@
               },
               "fieldConfig": {
                 "defaults": {
+                  "min": 0,
+                  "max": 3.5,
                   "mappings": [
                     {
                       "type": "value",
@@ -147,19 +147,41 @@
                     ]
                   },
                   "color": {
-                    "mode": "continuous-GrYlRd"
+                    "mode": "palette-classic"
                   },
                   "custom": {
+                    "axisBorderShow": false,
+                    "axisCenteredZero": false,
+                    "axisColorMode": "text",
+                    "axisLabel": "",
                     "axisPlacement": "auto",
-                    "fillOpacity": 70,
+                    "barAlignment": 0,
+                    "barWidthFactor": 0.6,
+                    "drawStyle": "line",
+                    "fillOpacity": 0,
+                    "gradientMode": "none",
                     "hideFrom": {
                       "legend": false,
                       "tooltip": false,
                       "viz": false
                     },
                     "insertNulls": false,
-                    "lineWidth": 0,
-                    "spanNulls": false
+                    "lineInterpolation": "stepBefore",
+                    "lineWidth": 1,
+                    "pointSize": 5,
+                    "scaleDistribution": {
+                      "type": "linear"
+                    },
+                    "showPoints": "auto",
+                    "showValues": false,
+                    "spanNulls": true,
+                    "stacking": {
+                      "group": "A",
+                      "mode": "none"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
                   }
                 },
                 "overrides": []
