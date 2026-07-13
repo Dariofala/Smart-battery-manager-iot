@@ -63,7 +63,9 @@ BN_TO_KEY = {
     "nRF52840-Temperature": "temperature",
 }
 
-WINDOW_SECONDS = 15          # metrics window = normal sampling period
+WINDOW_SECONDS = 60          # metrics window: longer than the sampling period to
+                             # smooth out event-driven nodes that stay silent when
+                             # their value does not change (reduces PDR noise)
 PDR_THRESHOLD = 0.7          # below this (and >=1 pkt per sensor) => congestion
 # DA RIVEDERE (se togliere o no)
 MAX_INTERVAL_S = 60          # only used for documentation/reference

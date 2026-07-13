@@ -57,7 +57,7 @@ static int cycles_without_publish = 0;
 // ===== [ADAPTIVE MECHANISM 1 - NEW] Adaptive sampling config and state =====
 // On congestion we double the period (step by step) up to MAX_INTERVAL.
 // On normal we halve it (step by step) back to BASE_INTERVAL.
-#define BASE_INTERVAL  (15 * CLOCK_SECOND)   // normal sampling period
+#define BASE_INTERVAL  (1 * CLOCK_SECOND)    // [STRESS TEST] 1s to force congestion (normal: 15)
 #define MAX_INTERVAL   (60 * CLOCK_SECOND)   // slowest period under congestion
 
 static clock_time_t current_interval = BASE_INTERVAL; // period in use now
@@ -87,6 +87,19 @@ static mqtt_status_t status;
 #define STATE_DISCONNECTED 3
 
 static uint8_t state = STATE_INIT;
+
+// ===== [PUBLISH ROBUSTNESS - NEW] Retry + forced reconnect config/state =====
+// A telemetry publish can fail with MQTT_STATUS_OUT_QUEUE_FULL when the TCP
+// queue is full (typical under the 1s stress test). We retry a few times
+// immediately; if it keeps failing we count consecutive failures and, past a
+// threshold, force a clean reconnect so the node recovers instead of dying.
+#define MAX_PUBLISH_RETRIES        3   // immediate retries per publish
+#define MAX_CONSECUTIVE_FAILURES   5   // failed publishes before forcing reconnect
+static uint8_t consecutive_pub_failures = 0;
+
+// Forward declaration: used in the process below, defined after have_connectivity.
+static void try_publish(const char *topic, const char *payload);
+// ===== [END PUBLISH ROBUSTNESS - NEW] =====
 
 PROCESS(mqtt_temperature_process, "MQTT Temperature Process");
 AUTOSTART_PROCESSES(&mqtt_temperature_process);
@@ -163,6 +176,40 @@ static bool have_connectivity(void) {
   if(uip_ds6_get_global(ADDR_PREFERRED) == NULL || uip_ds6_defrt_choose() == NULL) {return false; }
   return true;
 }
+
+// ===== [PUBLISH ROBUSTNESS - NEW] Centralized publish with retry + reconnect =====
+// Tries to publish; on OUT_QUEUE_FULL it retries a few times immediately.
+// On success it clears the failure counter. On repeated failure it increments
+// consecutive_pub_failures and, past MAX_CONSECUTIVE_FAILURES, forces a clean
+// MQTT reconnect (disconnect + go back to STATE_DISCONNECTED) so the node keeps
+// running under stress instead of getting stuck with a full queue.
+static void try_publish(const char *topic, const char *payload) {
+  mqtt_status_t st = MQTT_STATUS_OUT_QUEUE_FULL;
+  int attempt;
+
+  for(attempt = 0; attempt < MAX_PUBLISH_RETRIES; attempt++) {
+    st = mqtt_publish(&conn, NULL, (char *)topic, (uint8_t *)payload,
+                      strlen(payload), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+    if(st == MQTT_STATUS_OK) {
+      break;
+    }
+  }
+
+  if(st == MQTT_STATUS_OK) {
+    consecutive_pub_failures = 0;
+  } else {
+    consecutive_pub_failures++;
+    LOG_ERR("Publish failed on %s, status=%d (consecutive=%d)\n",
+            topic, st, consecutive_pub_failures);
+    if(consecutive_pub_failures >= MAX_CONSECUTIVE_FAILURES) {
+      LOG_WARN("Too many publish failures. Forcing MQTT reconnect...\n");
+      mqtt_disconnect(&conn);
+      state = STATE_DISCONNECTED;
+      consecutive_pub_failures = 0;
+    }
+  }
+}
+// ===== [END PUBLISH ROBUSTNESS - NEW] =====
 
 // ===== [MQTT REGISTRATION - NEW] Publish a registration message once =====
 // Sends {"id":..., "type":..., "ip":...} on the registration topic so the
@@ -285,7 +332,9 @@ PROCESS_THREAD(mqtt_temperature_process, ev, data)
             LOG_INFO("Variation (>= threshold). Publishing: %s\n", app_buffer);
         }
         
-        mqtt_publish(&conn, NULL, TOPIC_TEMPERATURE, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+        // ===== [PUBLISH ROBUSTNESS - NEW] Robust publish (retry + reconnect) =====
+        try_publish(TOPIC_TEMPERATURE, app_buffer);
+        // ===== [END PUBLISH ROBUSTNESS - NEW] =====
         
         last_published_temp = current_temp;
         cycles_without_publish = 0; /* Reset the counter because we just published */
