@@ -83,6 +83,12 @@ static uint8_t recovery_counter = 0;
 #define PV_THRESHOLD 140.0
 #define CRITICAL_SOC 20.0
 
+// ===== [SAFE MODE EXIT - NEW] Remember previous Safe Mode status =====
+// Lets us detect the Safe Mode -> normal transition and publish a recovery
+// state, so Grafana leaves the "Safe Mode" state instead of staying stuck.
+static bool was_safe_mode = false;
+// ===== [END SAFE MODE EXIT - NEW] =====
+
 /* MQTT and CoAP Structures */
 static struct mqtt_connection conn;
 static mqtt_status_t status;
@@ -650,6 +656,25 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
         snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"SAFE MODE ON: Sensor timeout detected. Emergency regime active.\"}");
         try_publish(TOPIC_ALARMS, alarms_buffer);
       }
+
+      // ===== [SAFE MODE EXIT - NEW] Detect recovery and publish restored state =====
+      // If last cycle was Safe Mode and now it is not, we just recovered.
+      // Reset the FSM to PV regime and publish it, so the Cloud updates the
+      // system state on InfluxDB and Grafana leaves the Safe Mode state.
+      if(was_safe_mode && !is_safe_mode) {
+        system_state = ACT_STATE_PV;
+        recovery_counter = 0;
+        LOG_INFO(">> RECOVERY: Exiting Safe Mode, back to PV Regime.\n");
+        leds_off(LEDS_ALL);
+        leds_on(LEDS_GREEN);
+        // "PV Mode" keyword is what the Cloud maps to STATE 1.
+        snprintf(alarms_buffer, APP_BUFFER_SIZE,
+                 "{\"alarm\":\"Recovery complete. Back to PV Mode.\"}");
+        try_publish(TOPIC_ALARMS, alarms_buffer);
+      }
+      // Remember current status for the next cycle.
+      was_safe_mode = is_safe_mode;
+      // ===== [END SAFE MODE EXIT - NEW] =====
 
       /* Update variables for the next cycle */
       prev_power = current_power;
