@@ -43,7 +43,7 @@ static char app_buffer[APP_BUFFER_SIZE];
 // The Cloud detects congestion and tells us via the congestion topic.
 // On congestion we double the period (step by step) up to MAX_INTERVAL.
 // On normal we halve it (step by step) back to BASE_INTERVAL.
-#define BASE_INTERVAL  (1 * CLOCK_SECOND)    // [STRESS TEST] 1s to force congestion (normal: 15)
+#define BASE_INTERVAL  (0.5 * CLOCK_SECOND)    // [STRESS TEST] 1s to force congestion (normal: 15)
 #define MAX_INTERVAL   (60 * CLOCK_SECOND)   // slowest period under congestion
 
 static clock_time_t current_interval = BASE_INTERVAL; // period in use now
@@ -236,8 +236,12 @@ static void try_publish(const char *topic, const char *payload) {
 // Cloud can add this node to the DB directory and ping it for latency.
 // Returns true only if the publish was accepted by the MQTT queue.
 static bool publish_registration(void) {
-  char reg_payload[128];
-  char ipbuf[48];
+  // ===== [BUGFIX - NEW] Buffers MUST be static: mqtt_publish keeps the pointer
+  // and serializes asynchronously, so a stack buffer would be overwritten
+  // before the packet is sent (caused a corrupted registration payload). =====
+  static char reg_payload[128];
+  static char ipbuf[48];
+  // ===== [END BUGFIX - NEW] =====
   uip_ds6_addr_t *lladdr = uip_ds6_get_global(ADDR_PREFERRED);
   if(lladdr != NULL) {
     uiplib_ipaddr_snprint(ipbuf, sizeof(ipbuf), &lladdr->ipaddr);
