@@ -386,8 +386,8 @@ class RegistrationResource(resource.Resource):
             return
 
         actuator_url = f"coap://[{actuator_ip}]:5683/control/register_sensor"
-        payload_bytes = json.dumps({"type": sensor_type, "endpoint": sensor_endpoint}).encode('utf-8')
-
+        payload_bytes = json.dumps({"type": sensor_type, "endpoint": sensor_endpoint},
+                                   separators=(",", ":")).encode('utf-8')
         log_print(f"Pushing sensor endpoint to actuator at {actuator_url}...")
         
         try:
@@ -663,7 +663,8 @@ async def main():
                     table_task.cancel() # Stop the background printing
 
                 elif command == "alarm":
-                    payload = json.dumps({"alarm": "Simulating Power collapse"})
+                    payload = json.dumps({"alarm": "Simulating Power collapse"},
+                                         separators=(",", ":"))
                     mqtt_client.publish(ALARM_TOPIC, payload)
                     print(f"\n> [CLI] Sent MQTT ALARM to Actuator.\n")
 
@@ -673,7 +674,8 @@ async def main():
                         num = float(num_str)
                         if 0.0 <= num <= 100.0:
                             # Building a JSON SenML valid for C parsing
-                            payload = json.dumps({"bn": "cli", "n": "battery_soc", "v": num})
+                            payload = json.dumps({"bn": "cli", "n": "battery_soc", "v": num},
+                                                 separators=(",", ":"))
                             mqtt_client.publish(COMMANDS_TOPIC, payload)
                             print(f"\n> [CLI] Sent Battery SOC override: {num}%\n")
                         else:

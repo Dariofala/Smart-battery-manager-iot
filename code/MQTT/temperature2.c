@@ -167,7 +167,8 @@ static bool have_connectivity(void) {
 // ===== [MQTT REGISTRATION - NEW] Publish a registration message once =====
 // Sends {"id":..., "type":..., "ip":...} on the registration topic so the
 // Cloud can add this node to the DB directory and ping it for latency.
-static void publish_registration(void) {
+// Returns true only if the publish was accepted by the MQTT queue.
+static bool publish_registration(void) {
   char reg_payload[128];
   char ipbuf[48];
   uip_ds6_addr_t *lladdr = uip_ds6_get_global(ADDR_PREFERRED);
@@ -179,9 +180,16 @@ static void publish_registration(void) {
   // Compact JSON (no spaces) to match the Cloud/firmware string parsers.
   snprintf(reg_payload, sizeof(reg_payload),
            "{\"id\":\"%s\",\"type\":\"%s\",\"ip\":\"%s\"}", CLIENT_ID, NODE_TYPE, ipbuf);
-  mqtt_publish(&conn, NULL, TOPIC_REGISTRATION, (uint8_t *)reg_payload,
-               strlen(reg_payload), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
-  LOG_INFO("[REGISTRATION] Sent: %s\n", reg_payload);
+  // RETAIN so the broker keeps this message and delivers it to the Cloud even
+  // if the Cloud subscribes to 'registration' later.
+  mqtt_status_t st = mqtt_publish(&conn, NULL, TOPIC_REGISTRATION, (uint8_t *)reg_payload,
+                                  strlen(reg_payload), MQTT_QOS_LEVEL_0, MQTT_RETAIN_ON);
+  if(st == MQTT_STATUS_OK) {
+    LOG_INFO("[REGISTRATION] Sent: %s\n", reg_payload);
+    return true;
+  }
+  LOG_ERR("[REGISTRATION] Publish failed (status=%d). Will retry.\n", st);
+  return false;
 }
 // ===== [END MQTT REGISTRATION - NEW] =====
 
@@ -231,15 +239,10 @@ PROCESS_THREAD(mqtt_temperature_process, ev, data)
     }
 
     // ===== [ADAPTIVE MECHANISM 1 / REGISTRATION - NEW] Subscribe and register =====
-    // STATE_CONNECTED: subscribe to the congestion topic and register once.
+    // STATE_CONNECTED: subscribe to the congestion topic.
     if(state == STATE_CONNECTED) {
       LOG_INFO("Sending Subscribe request to %s\n", TOPIC_CONGESTION);
       mqtt_subscribe(&conn, NULL, TOPIC_CONGESTION, MQTT_QOS_LEVEL_0);
-
-      if(!registered) {
-        publish_registration();
-        registered = true;
-      }
 
       state = STATE_SUBSCRIBING; // Wait for the SUBACK from the callback
     }
@@ -248,6 +251,18 @@ PROCESS_THREAD(mqtt_temperature_process, ev, data)
     // STATE_SUBSCRIBED
     // ===== [ADAPTIVE MECHANISM - MODIFIED] Publishing now happens in STATE_SUBSCRIBED =====
     if(state == STATE_SUBSCRIBED) {
+
+      // ===== [MQTT REGISTRATION - NEW] Register once, after SUBACK (queue is free) =====
+      // Done here (not in STATE_CONNECTED) so the SUBSCRIBE has already left the
+      // TX queue and the registration PUBLISH does not fail with OUT_QUEUE_FULL.
+      // Retries next cycle if it still fails.
+      if(!registered) {
+        if(publish_registration()) {
+          registered = true;
+        }
+      }
+      // ===== [END MQTT REGISTRATION - NEW] =====
+
       float current_temp = module_temp_array[current_step]; // Read temperature
       
       int temp_int = (int)current_temp;
