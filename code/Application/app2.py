@@ -63,9 +63,7 @@ BN_TO_KEY = {
     "nRF52840-Temperature": "temperature",
 }
 
-WINDOW_SECONDS = 60          # metrics window: longer than the sampling period to
-                             # smooth out event-driven nodes that stay silent when
-                             # their value does not change (reduces PDR noise)
+WINDOW_SECONDS = 60          # metrics window = normal sampling period
 PDR_THRESHOLD = 0.7          # below this (and >=1 pkt per sensor) => congestion
 # DA RIVEDERE (se togliere o no)
 MAX_INTERVAL_S = 60          # only used for documentation/reference
@@ -188,8 +186,16 @@ def on_connect(client, userdata, flags, rc, properties):
     # ===== [END MQTT REGISTRATION - NEW] =====
 
 def on_message(client, userdata, msg):
-    payload = msg.payload.decode('utf-8')
-    
+    # ===== [BUGFIX - NEW] Never let a malformed payload crash the MQTT thread =====
+    # Some messages (corrupted, binary, or stale retained) may not be valid
+    # UTF-8/JSON. Decode inside try and drop the message instead of raising.
+    try:
+        payload = msg.payload.decode('utf-8')
+    except (UnicodeDecodeError, AttributeError):
+        log_print(f"[MQTT WARN] Dropped non-UTF8 payload on topic '{msg.topic}'")
+        return
+    # ===== [END BUGFIX - NEW] =====
+
     try:
         data = json.loads(payload)
         
@@ -265,6 +271,10 @@ def on_message(client, userdata, msg):
             
     except json.JSONDecodeError:
         log_print(f"[MQTT ERROR] Received non-JSON payload: {payload}")
+    # ===== [BUGFIX - NEW] Catch-all so no handler error kills the MQTT thread =====
+    except Exception as e:
+        log_print(f"[MQTT ERROR] on_message failed on topic '{msg.topic}': {e}")
+    # ===== [END BUGFIX - NEW] =====
 
 # CoAP client Context reusable for all the output requests
 coap_client_context = None

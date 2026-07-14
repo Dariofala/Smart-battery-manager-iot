@@ -89,6 +89,15 @@ static uint8_t recovery_counter = 0;
 static bool was_safe_mode = false;
 // ===== [END SAFE MODE EXIT - NEW] =====
 
+// ===== [SAFE MODE EXIT FIX - NEW] Make recovery reliable =====
+// The recovery message can fail with OUT_QUEUE_FULL and be lost (it was sent
+// only once). We keep a "pending" flag and re-publish the PV recovery every
+// cycle until one publish actually succeeds. 'last_publish_ok' is set by
+// try_publish so we know when it went through.
+static bool recovery_pending = false;
+static bool last_publish_ok = false;
+// ===== [END SAFE MODE EXIT FIX - NEW] =====
+
 /* MQTT and CoAP Structures */
 static struct mqtt_connection conn;
 static mqtt_status_t status;
@@ -303,8 +312,14 @@ static void try_publish(const char *topic, const char *payload) {
 
   if(st == MQTT_STATUS_OK) {
     consecutive_pub_failures = 0;   // healthy again
+    // ===== [SAFE MODE EXIT FIX - NEW] Report success to the caller =====
+    last_publish_ok = true;
+    // ===== [END SAFE MODE EXIT FIX - NEW] =====
   } else {
     consecutive_pub_failures++;
+    // ===== [SAFE MODE EXIT FIX - NEW] Report failure to the caller =====
+    last_publish_ok = false;
+    // ===== [END SAFE MODE EXIT FIX - NEW] =====
     LOG_ERR("Publish failed on %s, status=%d (consecutive=%d)\n",
             topic, st, consecutive_pub_failures);
 
@@ -659,22 +674,38 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
 
       // ===== [SAFE MODE EXIT - NEW] Detect recovery and publish restored state =====
       // If last cycle was Safe Mode and now it is not, we just recovered.
-      // Reset the FSM to PV regime and publish it, so the Cloud updates the
-      // system state on InfluxDB and Grafana leaves the Safe Mode state.
+      // Reset the FSM to PV regime and start the recovery publish.
       if(was_safe_mode && !is_safe_mode) {
         system_state = ACT_STATE_PV;
         recovery_counter = 0;
         LOG_INFO(">> RECOVERY: Exiting Safe Mode, back to PV Regime.\n");
         leds_off(LEDS_ALL);
         leds_on(LEDS_GREEN);
-        // "PV Mode" keyword is what the Cloud maps to STATE 1.
-        snprintf(alarms_buffer, APP_BUFFER_SIZE,
-                 "{\"alarm\":\"Recovery complete. Back to PV Mode.\"}");
-        try_publish(TOPIC_ALARMS, alarms_buffer);
+        // ===== [SAFE MODE EXIT FIX - NEW] Arm the pending recovery =====
+        recovery_pending = true;
+        // ===== [END SAFE MODE EXIT FIX - NEW] =====
       }
       // Remember current status for the next cycle.
       was_safe_mode = is_safe_mode;
       // ===== [END SAFE MODE EXIT - NEW] =====
+
+      // ===== [SAFE MODE EXIT FIX - NEW] Re-publish PV recovery until it succeeds =====
+      // The single recovery publish can fail with OUT_QUEUE_FULL and be lost,
+      // leaving Grafana stuck on Safe Mode. So we keep re-publishing every cycle
+      // (only while not in Safe Mode) until one publish actually goes through.
+      if(recovery_pending && !is_safe_mode) {
+        // "PV Mode" keyword is what the Cloud maps to STATE 1.
+        snprintf(alarms_buffer, APP_BUFFER_SIZE,
+                 "{\"alarm\":\"Recovery complete. Back to PV Mode.\"}");
+        try_publish(TOPIC_ALARMS, alarms_buffer);
+        if(last_publish_ok) {
+          recovery_pending = false;   // delivered, stop retrying
+          LOG_INFO(">> RECOVERY message delivered to Cloud.\n");
+        } else {
+          LOG_WARN(">> RECOVERY message not sent yet, will retry next cycle.\n");
+        }
+      }
+      // ===== [END SAFE MODE EXIT FIX - NEW] =====
 
       /* Update variables for the next cycle */
       prev_power = current_power;
