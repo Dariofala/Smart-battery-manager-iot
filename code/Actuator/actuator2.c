@@ -89,19 +89,6 @@ static uint8_t recovery_counter = 0;
 static bool was_safe_mode = false;
 // ===== [END SAFE MODE EXIT - NEW] =====
 
-// ===== [SAFE MODE EXIT FIX - NEW] Make recovery reliable =====
-// The recovery message can fail with OUT_QUEUE_FULL and be lost (it was sent
-// only once). We keep a "pending" flag and re-publish the PV recovery every
-// cycle until one publish actually succeeds. 'last_publish_ok' is set by
-// try_publish so we know when it went through.
-static bool recovery_pending = false;
-static bool last_publish_ok = false;
-// Dedicated static buffer for the recovery message, so it never shares memory
-// with other alarms/commands that may be in-flight at the same time under stress
-// (a shared buffer caused a corrupted payload with trailing garbage bytes).
-static char recovery_buffer[APP_BUFFER_SIZE];
-// ===== [END SAFE MODE EXIT FIX - NEW] =====
-
 /* MQTT and CoAP Structures */
 static struct mqtt_connection conn;
 static mqtt_status_t status;
@@ -316,14 +303,8 @@ static void try_publish(const char *topic, const char *payload) {
 
   if(st == MQTT_STATUS_OK) {
     consecutive_pub_failures = 0;   // healthy again
-    // ===== [SAFE MODE EXIT FIX - NEW] Report success to the caller =====
-    last_publish_ok = true;
-    // ===== [END SAFE MODE EXIT FIX - NEW] =====
   } else {
     consecutive_pub_failures++;
-    // ===== [SAFE MODE EXIT FIX - NEW] Report failure to the caller =====
-    last_publish_ok = false;
-    // ===== [END SAFE MODE EXIT FIX - NEW] =====
     LOG_ERR("Publish failed on %s, status=%d (consecutive=%d)\n",
             topic, st, consecutive_pub_failures);
 
@@ -532,6 +513,14 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                 snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"charge\"}");
                 LOG_INFO("Maintaining PV Regime. Sending charge command to battery.\n");
                 try_publish(TOPIC_COMMANDS, sensors_buffer);
+                // ===== [STATE SYNC - NEW] Also report current state so the Cloud
+                // (and Grafana) stays aligned even without a transition, e.g. after
+                // exiting Safe Mode. "PV Mode" is the keyword the Cloud maps to STATE 1. =====
+                etimer_set(&spacing_timer, CLOCK_SECOND / 2);
+                PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
+                snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"info\":\"Maintaining PV Mode.\"}");
+                try_publish(TOPIC_ALARMS, alarms_buffer);
+                // ===== [END STATE SYNC - NEW] =====
             }
         }
         
@@ -619,6 +608,12 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                         leds_single_on(LEDS_YELLOW);
                         snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
                         try_publish(TOPIC_COMMANDS, sensors_buffer);
+                        // ===== [STATE SYNC - NEW] Report current state to keep the Cloud aligned =====
+                        etimer_set(&spacing_timer, CLOCK_SECOND / 2);
+                        PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
+                        snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"info\":\"Maintaining Battery Mode.\"}");
+                        try_publish(TOPIC_ALARMS, alarms_buffer);
+                        // ===== [END STATE SYNC - NEW] =====
                     }
                 } 
                 else if (system_state == ACT_STATE_GRID) {
@@ -648,6 +643,12 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                         leds_on(LEDS_RED);
                         snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"critical\"}");
                         try_publish(TOPIC_COMMANDS, sensors_buffer);
+                        // ===== [STATE SYNC - NEW] Report current state to keep the Cloud aligned =====
+                        etimer_set(&spacing_timer, CLOCK_SECOND / 2);
+                        PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
+                        snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"info\":\"Maintaining National Grid.\"}");
+                        try_publish(TOPIC_ALARMS, alarms_buffer);
+                        // ===== [END STATE SYNC - NEW] =====
                     }
                 }
             }
@@ -676,41 +677,20 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
         try_publish(TOPIC_ALARMS, alarms_buffer);
       }
 
-      // ===== [SAFE MODE EXIT - NEW] Detect recovery and publish restored state =====
-      // If last cycle was Safe Mode and now it is not, we just recovered.
-      // Reset the FSM to PV regime and start the recovery publish.
+      // ===== [SAFE MODE EXIT - SIMPLIFIED] No explicit recovery publish needed:
+      // on exiting Safe Mode the FSM re-enters a 'maintain' branch which now
+      // publishes its state (info) to the Cloud, so Grafana leaves Safe Mode
+      // automatically. Here we only reset the FSM to a known state. =====
       if(was_safe_mode && !is_safe_mode) {
         system_state = ACT_STATE_PV;
         recovery_counter = 0;
         LOG_INFO(">> RECOVERY: Exiting Safe Mode, back to PV Regime.\n");
         leds_off(LEDS_ALL);
         leds_on(LEDS_GREEN);
-        // ===== [SAFE MODE EXIT FIX - NEW] Arm the pending recovery =====
-        recovery_pending = true;
-        // ===== [END SAFE MODE EXIT FIX - NEW] =====
       }
       // Remember current status for the next cycle.
       was_safe_mode = is_safe_mode;
-      // ===== [END SAFE MODE EXIT - NEW] =====
-
-      // ===== [SAFE MODE EXIT FIX - NEW] Re-publish PV recovery until it succeeds =====
-      // The single recovery publish can fail with OUT_QUEUE_FULL and be lost,
-      // leaving Grafana stuck on Safe Mode. So we keep re-publishing every cycle
-      // (only while not in Safe Mode) until one publish actually goes through.
-      if(recovery_pending && !is_safe_mode) {
-        // "PV Mode" keyword is what the Cloud maps to STATE 1.
-        // Use a dedicated buffer to avoid corruption from other in-flight publishes.
-        snprintf(recovery_buffer, APP_BUFFER_SIZE,
-                 "{\"alarm\":\"Recovery complete. Back to PV Mode.\"}");
-        try_publish(TOPIC_ALARMS, recovery_buffer);
-        if(last_publish_ok) {
-          recovery_pending = false;   // delivered, stop retrying
-          LOG_INFO(">> RECOVERY message delivered to Cloud.\n");
-        } else {
-          LOG_WARN(">> RECOVERY message not sent yet, will retry next cycle.\n");
-        }
-      }
-      // ===== [END SAFE MODE EXIT FIX - NEW] =====
+      // ===== [END SAFE MODE EXIT - SIMPLIFIED] =====
 
       /* Update variables for the next cycle */
       prev_power = current_power;
