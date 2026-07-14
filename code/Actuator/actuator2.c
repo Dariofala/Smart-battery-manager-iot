@@ -96,6 +96,10 @@ static bool was_safe_mode = false;
 // try_publish so we know when it went through.
 static bool recovery_pending = false;
 static bool last_publish_ok = false;
+// Dedicated static buffer for the recovery message, so it never shares memory
+// with other alarms/commands that may be in-flight at the same time under stress
+// (a shared buffer caused a corrupted payload with trailing garbage bytes).
+static char recovery_buffer[APP_BUFFER_SIZE];
 // ===== [END SAFE MODE EXIT FIX - NEW] =====
 
 /* MQTT and CoAP Structures */
@@ -695,9 +699,10 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
       // (only while not in Safe Mode) until one publish actually goes through.
       if(recovery_pending && !is_safe_mode) {
         // "PV Mode" keyword is what the Cloud maps to STATE 1.
-        snprintf(alarms_buffer, APP_BUFFER_SIZE,
+        // Use a dedicated buffer to avoid corruption from other in-flight publishes.
+        snprintf(recovery_buffer, APP_BUFFER_SIZE,
                  "{\"alarm\":\"Recovery complete. Back to PV Mode.\"}");
-        try_publish(TOPIC_ALARMS, alarms_buffer);
+        try_publish(TOPIC_ALARMS, recovery_buffer);
         if(last_publish_ok) {
           recovery_pending = false;   // delivered, stop retrying
           LOG_INFO(">> RECOVERY message delivered to Cloud.\n");

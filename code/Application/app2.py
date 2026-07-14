@@ -197,7 +197,12 @@ def on_message(client, userdata, msg):
     # ===== [END BUGFIX - NEW] =====
 
     try:
-        data = json.loads(payload)
+        # ===== [BUGFIX - NEW] Tolerate trailing garbage after valid JSON =====
+        # Under stress a payload may arrive with leftover bytes after the JSON
+        # object (e.g. '{"alarm":"..."}Battery Mode."}'). raw_decode parses the
+        # first valid JSON object and ignores whatever follows.
+        data, _ = json.JSONDecoder().raw_decode(payload)
+        # ===== [END BUGFIX - NEW] =====
         
         # ===== [MQTT REGISTRATION - NEW] Handle node registration on 'registration' topic =====
         # MQTT nodes publish {"id": "...", "type": "...", "ip": "..."} once at startup.
