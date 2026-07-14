@@ -5,6 +5,12 @@ import paho.mqtt.client as mqtt
 import aiocoap
 import aiocoap.resource as resource
 
+# ===== [METRICS/CONGESTION - NEW] Extra imports =====
+import time                 # window timing
+import threading            # protect counters shared between MQTT thread and asyncio
+import subprocess           # run ping6 to measure latency
+# ===== [END METRICS/CONGESTION - NEW] =====
+
 # InfluxDB Imports
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
@@ -45,6 +51,48 @@ STATE_CODES = {
     "STATE 3: Grid Regime": 3,
     "EMERGENCY: Safe Mode Active": 0,
 }
+
+# ===== [METRICS/CONGESTION - NEW] Config and shared state =====
+# The 4 sensors we track for the metrics (keys used everywhere below).
+SENSOR_KEYS = ["power", "irradiation", "battery", "temperature"]
+
+# Map the SenML base-name ("bn") / node_type to a sensor key.
+# CoAP nodes are tracked by node_type, MQTT nodes by their "bn".
+BN_TO_KEY = {
+    "nRF52840-Battery": "battery",
+    "nRF52840-Temperature": "temperature",
+}
+
+WINDOW_SECONDS = 60          # metrics window = normal sampling period
+PDR_THRESHOLD = 0.7          # below this (and >=1 pkt per sensor) => congestion
+# DA RIVEDERE (se togliere o no)
+MAX_INTERVAL_S = 60          # only used for documentation/reference
+
+# Congestion signalling topics/paths
+CONGESTION_TOPIC = "network/congestion"     # MQTT nodes subscribe here
+CONGESTION_COAP_PATH = "control/congestion" # CoAP nodes expose this resource
+
+# Per-sensor sequence tracking, used to compute PDR from seq gaps.
+# For each sensor: first/last seq seen and how many packets actually arrived
+# inside the current window.
+seq_state = {
+    k: {"first": None, "last": None, "received": 0} for k in SENSOR_KEYS
+}
+
+# Total messages received in the current window (all sensors together).
+msg_count_window = 0
+
+# Current congestion status (as seen by the Cloud).
+is_congested = False
+
+# One lock protects all the counters above, because they are updated from the
+# MQTT background thread (on_message) AND from the asyncio loop (observe_sensor).
+metrics_lock = threading.Lock()
+
+# MQTT nodes that registered their own IPv6, so latency (ping6) can reach them.
+# Shape: {"battery": "fd00::...", "temperature": "fd00::..."}
+mqtt_node_ips = {}
+# ===== [END METRICS/CONGESTION - NEW] =====
 
 # Helper function to print logs only if 'show' mode is active
 def log_print(msg):
@@ -105,18 +153,73 @@ def set_system_state(state_label):
     write_measurement("system", "system_state_code", code, extra_tags={"label": state_label})
     write_event("state", state_label, state=state_label)
 
+# ===== [METRICS/CONGESTION - NEW] Record one received packet =====
+# DA RIVEDERE 3^ riga dei commenti
+def record_packet(sensor_key, seq):
+    # Called on every telemetry message (MQTT or CoAP).
+    # Updates the per-sensor seq window and the global message counter.
+    # 'seq' may be None if the payload has no sequence number: in that case we
+    # still count the message but cannot use it for PDR.
+    global msg_count_window
+    with metrics_lock:
+        msg_count_window += 1
+        if sensor_key not in seq_state:
+            return
+        if seq is None:
+            seq_state[sensor_key]["received"] += 1
+            return
+        st = seq_state[sensor_key]
+        if st["first"] is None:
+            st["first"] = seq
+        st["last"] = seq
+        st["received"] += 1
+# ===== [END METRICS/CONGESTION - NEW] =====
+
 # MODULE 1: MQTT MANAGEMENT (Background Thread)
 def on_connect(client, userdata, flags, rc, properties):
     log_print(f"[MQTT] Connected to local Mosquitto broker (Code: {rc})")
     # Subscribe to the topics defined in the C firmware
     client.subscribe("network/#")
+    # ===== [MQTT REGISTRATION - NEW] Also listen to the registration topic =====
+    # MQTT nodes publish here at startup so we can add them to the DB directory.
+    client.subscribe("registration")
+    # ===== [END MQTT REGISTRATION - NEW] =====
 
 def on_message(client, userdata, msg):
-    payload = msg.payload.decode('utf-8')
-    
+    # ===== [BUGFIX - NEW] Never let a malformed payload crash the MQTT thread =====
+    # Some messages (corrupted, binary, or stale retained) may not be valid
+    # UTF-8/JSON. Decode inside try and drop the message instead of raising.
     try:
-        data = json.loads(payload)
+        payload = msg.payload.decode('utf-8')
+    except (UnicodeDecodeError, AttributeError):
+        log_print(f"[MQTT WARN] Dropped non-UTF8 payload on topic '{msg.topic}'")
+        return
+    # ===== [END BUGFIX - NEW] =====
+
+    try:
+        # ===== [BUGFIX - NEW] Tolerate trailing garbage after valid JSON =====
+        # Under stress a payload may arrive with leftover bytes after the JSON
+        # object (e.g. '{"alarm":"..."}Battery Mode."}'). raw_decode parses the
+        # first valid JSON object and ignores whatever follows.
+        data, _ = json.JSONDecoder().raw_decode(payload)
+        # ===== [END BUGFIX - NEW] =====
         
+        # ===== [MQTT REGISTRATION - NEW] Handle node registration on 'registration' topic =====
+        # MQTT nodes publish {"id": "...", "type": "...", "ip": "..."} once at startup.
+        if msg.topic == "registration":
+            node_id = data.get("id", "Unknown")
+            node_type = data.get("type", "Unknown")
+            node_ip = data.get("ip")   # IPv6 string, used for latency ping
+            log_print(f"\n[MQTT REGISTRATION] {node_id} (type: {node_type}, ip: {node_ip})")
+            # Save the IP so measure_latency() can ping this MQTT node too.
+            if node_ip and node_type in SENSOR_KEYS:
+                mqtt_node_ips[node_type] = node_ip
+            # Save it in the same 'registry' directory used for CoAP nodes.
+            endpoint = f"mqtt://{node_id}" if not node_ip else f"mqtt://[{node_ip}]"
+            persist_registration(node_id, node_type, endpoint)
+            return
+        # ===== [END MQTT REGISTRATION - NEW] =====
+
         # 1. Parsing SenML Telemetry Data
         if "bn" in data and "n" in data and "v" in data:
             device = data["bn"]
@@ -137,6 +240,13 @@ def on_message(client, userdata, msg):
                 # Only if the firmware publishes the state as SenML numeric value
                 set_system_state(data.get("vs", "Unknown"))
             
+            # ===== [METRICS/CONGESTION - NEW] Count MQTT telemetry for PDR/msg-count =====
+            # Only real sensor telemetry counts (skip CLI overrides with bn="cli").
+            sensor_key = BN_TO_KEY.get(device)
+            if sensor_key is not None:
+                record_packet(sensor_key, data.get("seq"))
+            # ===== [END METRICS/CONGESTION - NEW] =====
+
             # DB Write
             write_measurement(device, measurement, value)
             
@@ -166,6 +276,10 @@ def on_message(client, userdata, msg):
             
     except json.JSONDecodeError:
         log_print(f"[MQTT ERROR] Received non-JSON payload: {payload}")
+    # ===== [BUGFIX - NEW] Catch-all so no handler error kills the MQTT thread =====
+    except Exception as e:
+        log_print(f"[MQTT ERROR] on_message failed on topic '{msg.topic}': {e}")
+    # ===== [END BUGFIX - NEW] =====
 
 # CoAP client Context reusable for all the output requests
 coap_client_context = None
@@ -203,6 +317,10 @@ async def observe_sensor(client_ip, node_id, node_type):
                 elif node_type == "irradiation":
                     latest_data["irradiation"] = val
                 
+                # ===== [METRICS/CONGESTION - NEW] Count CoAP telemetry for PDR/msg-count =====
+                record_packet(node_type, data.get("seq"))
+                # ===== [END METRICS/CONGESTION - NEW] =====
+
                 # DB Write
                 write_measurement(node_id, measurement_name, val)
             except Exception as e:
@@ -285,8 +403,8 @@ class RegistrationResource(resource.Resource):
             return
 
         actuator_url = f"coap://[{actuator_ip}]:5683/control/register_sensor"
-        payload_bytes = json.dumps({"type": sensor_type, "endpoint": sensor_endpoint}).encode('utf-8')
-
+        payload_bytes = json.dumps({"type": sensor_type, "endpoint": sensor_endpoint},
+                                   separators=(",", ":")).encode('utf-8')
         log_print(f"Pushing sensor endpoint to actuator at {actuator_url}...")
         
         try:
@@ -328,7 +446,6 @@ async def table_renderer():
             print("             REAL-TIME SYSTEM DASHBOARD               ")
             print("======================================================")
             print(f" System State    : {latest_data['systemState']}")
-            print(f" Last Prediction : {latest_data['lastPrediction']}")
             print("------------------------------------------------------")
             print(f" AC Power        : {latest_data['AC_Power']:.2f} W")
             print(f" Irradiation     : {latest_data['irradiation']:.4f} W/m2")
@@ -339,6 +456,160 @@ async def table_renderer():
             await asyncio.sleep(1) # Refresh every second
     except asyncio.CancelledError:
         pass # Clean exit when the task is cancelled
+
+
+# ===== [METRICS/CONGESTION - NEW] Latency measurement via ping6 =====
+async def measure_latency():
+    # Ping every registered sensor and write the average RTT (ms) to InfluxDB.
+    # Runs ping6 in a thread so it never blocks the asyncio loop.
+    # CoAP sensors: IP taken from active_observes.
+    # MQTT sensors: IP taken from mqtt_node_ips (sent at registration).
+    targets = {}
+    for node_id, info in dict(active_observes).items():
+        if info.get("ip"):
+            targets[node_id] = info["ip"]
+    for node_type, ip in dict(mqtt_node_ips).items():
+        if ip:
+            targets[node_type] = ip
+
+    for node_id, ip in targets.items():
+        try:
+            # -c 3: three echo requests, -W 2: 2s timeout each
+            proc = await asyncio.to_thread(
+                subprocess.run,
+                ["ping6", "-c", "3", "-W", "2", ip],
+                capture_output=True, text=True
+            )
+            rtt = _parse_avg_rtt(proc.stdout)
+            if rtt is not None:
+                write_measurement(node_id, "latency_ms", rtt)
+                log_print(f"[LATENCY] {node_id} ({ip}): {rtt:.1f} ms")
+        except Exception as e:
+            log_print(f"[LATENCY ERROR] {node_id}: {e}")
+
+
+def _parse_avg_rtt(ping_output):
+    # Extract the average RTT from the ping summary line
+    # ("rtt min/avg/max/mdev = 1.2/3.4/5.6/0.7 ms").
+    try:
+        for line in ping_output.splitlines():
+            if "min/avg/max" in line:
+                stats = line.split("=")[1].strip().split()[0]
+                return float(stats.split("/")[1])
+    except Exception:
+        pass
+    return None
+
+
+def compute_pdr_locked():
+    # Compute per-sensor PDR from the seq window and the aggregate (mean) PDR.
+    # MUST be called while holding metrics_lock.
+    # Returns (per_sensor_pdr_dict, aggregate_pdr, all_sensors_alive).
+    per_sensor = {}
+    all_alive = True
+    for k in SENSOR_KEYS:
+        st = seq_state[k]
+        if st["received"] == 0:
+            # No packet at all from this sensor -> possible node failure,
+            # not congestion. We flag it so congestion logic can skip.
+            all_alive = False
+            per_sensor[k] = 0.0
+            continue
+        if st["first"] is None or st["last"] is None:
+            # Packets arrived but without seq: assume delivered.
+            per_sensor[k] = 1.0
+            continue
+        expected = (st["last"] - st["first"]) + 1
+        if expected <= 0:
+            expected = st["received"]
+        pdr = st["received"] / expected
+        if pdr > 1.0:
+            pdr = 1.0
+        per_sensor[k] = pdr
+
+    aggregate = sum(per_sensor.values()) / len(SENSOR_KEYS)
+    return per_sensor, aggregate, all_alive
+
+
+def reset_window_locked():
+    # Reset all per-window counters. MUST be called while holding metrics_lock.
+    global msg_count_window
+    msg_count_window = 0
+    for k in SENSOR_KEYS:
+        seq_state[k] = {"first": None, "last": None, "received": 0}
+
+
+async def send_congestion_signal(mqtt_client, congested):
+    # Notify all nodes of the current network condition.
+    # MQTT nodes: publish on the congestion topic.
+    # CoAP nodes: POST to their control/congestion resource.
+    flag = 1 if congested else 0
+    # ===== [METRICS/CONGESTION - NEW] Compact JSON so the C strstr parser matches =====
+    # separators=(",", ":") produces {"congested":1} with no space, which the
+    # firmware looks for with strstr. A plain json.dumps would add a space
+    # ({"congested": 1}) and cause a 4.00 Bad Request on the node.
+    payload = json.dumps({"congested": flag}, separators=(",", ":"))
+    # ===== [END METRICS/CONGESTION - NEW] =====
+
+    # --- MQTT side ---
+    try:
+        mqtt_client.publish(CONGESTION_TOPIC, payload)
+    except Exception as e:
+        log_print(f"[CONGESTION MQTT ERROR] {e}")
+
+    # --- CoAP side ---
+    payload_bytes = payload.encode('utf-8')
+    for node_id, info in dict(active_observes).items():
+        ip = info.get("ip")
+        if not ip:
+            continue
+        uri = f"coap://[{ip}]:5683/{CONGESTION_COAP_PATH}"
+        try:
+            request = aiocoap.Message(code=aiocoap.POST, uri=uri, payload=payload_bytes)
+            await asyncio.wait_for(coap_client_context.request(request).response, timeout=5.0)
+        except Exception as e:
+            log_print(f"[CONGESTION CoAP ERROR] {node_id}: {e}")
+
+
+async def metrics_monitor(mqtt_client):
+    # Main periodic loop: every WINDOW_SECONDS it computes the metrics,
+    # writes them to InfluxDB, decides if the network is congested, and
+    # signals all nodes. Also triggers a latency measurement each window.
+    global is_congested
+    while True:
+        await asyncio.sleep(WINDOW_SECONDS)
+
+        with metrics_lock:
+            per_sensor, aggregate, all_alive = compute_pdr_locked()
+            total_msgs = msg_count_window
+            reset_window_locked()
+
+        # Persist the metrics for Grafana
+        write_measurement("metrics", "msg_count", total_msgs)
+        write_measurement("metrics", "pdr", aggregate)
+        for k, v in per_sensor.items():
+            write_measurement(k, "pdr_node", v)
+
+        # Congestion decision:
+        # PDR under threshold AND every sensor sent at least one packet
+        # (if a sensor is silent it's a node failure, handled elsewhere).
+        congested_now = (aggregate < PDR_THRESHOLD) and all_alive
+
+        # Send a signal every window (congestion OR normal), so nodes always
+        # know the current state and can recover when it clears.
+        is_congested = congested_now
+        write_measurement("metrics", "congestion", 1 if congested_now else 0)
+        # to disable adaptive mechanisms comment the next line
+        await send_congestion_signal(mqtt_client, congested_now)
+
+        if congested_now:
+            log_print(f"[CONGESTION] PDR={aggregate:.2f} < {PDR_THRESHOLD} -> signalling nodes")
+        else:
+            log_print(f"[METRICS] PDR={aggregate:.2f}, msgs={total_msgs}, normal")
+
+        # Measure latency once per window (non-blocking)
+        asyncio.create_task(measure_latency())
+# ===== [END METRICS/CONGESTION - NEW] =====
 
 
 # MAIN LOOP: MULTI-PROTOCOL ORCHESTRATION
@@ -375,6 +646,10 @@ async def main():
     await aiocoap.Context.create_server_context(root, bind=("::", 5683))
     log_print("[CoAP] Server listening on standard port 5683...\n")
 
+    # ===== [METRICS/CONGESTION - NEW] Start the periodic metrics/congestion monitor =====
+    asyncio.create_task(metrics_monitor(mqtt_client))
+    # ===== [END METRICS/CONGESTION - NEW] =====
+
     ALARM_TOPIC = "network/alarms" 
     COMMANDS_TOPIC = "network/commands/battery"
 
@@ -405,7 +680,8 @@ async def main():
                     table_task.cancel() # Stop the background printing
 
                 elif command == "alarm":
-                    payload = json.dumps({"alarm": "Simulating Power collapse"})
+                    payload = json.dumps({"alarm": "Simulating Power collapse"},
+                                         separators=(",", ":"))
                     mqtt_client.publish(ALARM_TOPIC, payload)
                     print(f"\n> [CLI] Sent MQTT ALARM to Actuator.\n")
 
@@ -415,7 +691,8 @@ async def main():
                         num = float(num_str)
                         if 0.0 <= num <= 100.0:
                             # Building a JSON SenML valid for C parsing
-                            payload = json.dumps({"bn": "cli", "n": "battery_soc", "v": num})
+                            payload = json.dumps({"bn": "cli", "n": "battery_soc", "v": num},
+                                                 separators=(",", ":"))
                             mqtt_client.publish(COMMANDS_TOPIC, payload)
                             print(f"\n> [CLI] Sent Battery SOC override: {num}%\n")
                         else:

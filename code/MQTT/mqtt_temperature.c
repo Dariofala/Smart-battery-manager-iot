@@ -2,6 +2,10 @@
 #include "net/routing/routing.h"
 #include "mqtt.h"
 #include "net/ipv6/uip.h"
+// ===== [MQTT REGISTRATION - NEW] Needed to print own IPv6 as a string =====
+#include "net/ipv6/uiplib.h"
+#include "net/ipv6/uip-ds6.h"
+// ===== [END MQTT REGISTRATION - NEW] =====
 #include "sys/etimer.h"
 #include "sys/log.h"
 
@@ -21,6 +25,12 @@
 #define CLIENT_ID "nRF52840-Temperature"
 #define TOPIC_TEMPERATURE "network/temperature"
 
+// ===== [MQTT REGISTRATION / CONGESTION - NEW] Node type and extra topics =====
+#define NODE_TYPE "temperature"                     // Used in the registration payload
+#define TOPIC_REGISTRATION "registration"           // Topic to register at startup
+#define TOPIC_CONGESTION "network/congestion"       // Topic to receive congestion signals
+// ===== [END MQTT REGISTRATION / CONGESTION - NEW] =====
+
 #define APP_BUFFER_SIZE 128
 static char app_buffer[APP_BUFFER_SIZE];
 #define MAX_TCP_SEGMENT_SIZE 128
@@ -30,13 +40,38 @@ static char app_buffer[APP_BUFFER_SIZE];
 
 // EVENT-DRIVEN LOGIC 
 // Data is published only if the temperature changes by at least 0.5 degrees
-#define TEMP_THRESHOLD 0.5
+// ===== [ADAPTIVE MECHANISM 2 - MODIFIED] Threshold is now a variable =====
+// Normally 0.5 C. Under congestion the Cloud makes us raise it to 2.0 C, so we
+// publish fewer messages (filtering at the device level).
+#define TEMP_THRESHOLD_NORMAL 0.5
+#define TEMP_THRESHOLD_CONGESTED 2.0
+static float temp_threshold = TEMP_THRESHOLD_NORMAL;
+// ===== [END ADAPTIVE MECHANISM 2 - MODIFIED] =====
 static float last_published_temp = -100.0; // Dummy initialization to force the 1st transmission
 static int current_step = 0;
 
 // Heartbeat counter 
 static int cycles_without_publish = 0;
 #define MAX_IDLE_CYCLES 3  // 3 cycles for a maximum of 45s, at the end of that temperature must be sent
+
+// ===== [ADAPTIVE MECHANISM 1 - NEW] Adaptive sampling config and state =====
+// On congestion we double the period (step by step) up to MAX_INTERVAL.
+// On normal we halve it (step by step) back to BASE_INTERVAL.
+#define BASE_INTERVAL  (0.5 * CLOCK_SECOND)    // [STRESS TEST] 1s to force congestion (normal: 15)
+#define MAX_INTERVAL   (60 * CLOCK_SECOND)   // slowest period under congestion
+
+static clock_time_t current_interval = BASE_INTERVAL; // period in use now
+static bool congested = false;                        // last state from Cloud
+// ===== [END ADAPTIVE MECHANISM 1 - NEW] =====
+
+// ===== [INSTRUMENTATION - NEW] Sequence number for PDR =====
+// Attached to every telemetry payload. The Cloud uses seq gaps to compute PDR.
+static uint32_t seq_num = 0;
+// ===== [END INSTRUMENTATION - NEW] =====
+
+// ===== [MQTT REGISTRATION - NEW] Register only once =====
+static bool registered = false;
+// ===== [END MQTT REGISTRATION - NEW] =====
 
 // MQTT Connection Structure and State Machine
 static struct mqtt_connection conn;
@@ -45,9 +80,26 @@ static mqtt_status_t status;
 #define STATE_INIT         0
 #define STATE_CONNECTING   1
 #define STATE_CONNECTED    2
+// ===== [ADAPTIVE MECHANISM 1 - NEW] Extra states to subscribe to congestion =====
+#define STATE_SUBSCRIBING  4
+#define STATE_SUBSCRIBED   5
+// ===== [END ADAPTIVE MECHANISM 1 - NEW] =====
 #define STATE_DISCONNECTED 3
 
 static uint8_t state = STATE_INIT;
+
+// ===== [PUBLISH ROBUSTNESS - NEW] Retry + forced reconnect config/state =====
+// A telemetry publish can fail with MQTT_STATUS_OUT_QUEUE_FULL when the TCP
+// queue is full (typical under the 1s stress test). We retry a few times
+// immediately; if it keeps failing we count consecutive failures and, past a
+// threshold, force a clean reconnect so the node recovers instead of dying.
+#define MAX_PUBLISH_RETRIES        3   // immediate retries per publish
+#define MAX_CONSECUTIVE_FAILURES   5   // failed publishes before forcing reconnect
+static uint8_t consecutive_pub_failures = 0;
+
+// Forward declaration: used in the process below, defined after have_connectivity.
+static void try_publish(const char *topic, const char *payload);
+// ===== [END PUBLISH ROBUSTNESS - NEW] =====
 
 PROCESS(mqtt_temperature_process, "MQTT Temperature Process");
 AUTOSTART_PROCESSES(&mqtt_temperature_process);
@@ -66,6 +118,54 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
     case MQTT_EVENT_PUBACK:
       LOG_INFO("Message published successfully (PUBACK received).\n");
       break;
+    // ===== [ADAPTIVE MECHANISM 1 - NEW] Subscription confirmed =====
+    case MQTT_EVENT_SUBACK:
+      LOG_INFO("Subscription confirmed to the congestion topic.\n");
+      state = STATE_SUBSCRIBED;
+      break;
+    // ===== [END ADAPTIVE MECHANISM 1 - NEW] =====
+
+    // ===== [ADAPTIVE MECHANISM - NEW] Handle congestion signal from the Cloud =====
+    case MQTT_EVENT_PUBLISH: {
+      struct mqtt_message *msg = data;
+
+      // ANTI-CRASH PROTECTION
+      if(msg == NULL || msg->payload_chunk == NULL || msg->payload_length <= 0) {
+        break;
+      }
+
+      char payload[128];
+      snprintf(payload, sizeof(payload), "%.*s", msg->payload_length, (char *)msg->payload_chunk);
+
+      // The Cloud publishes {"congested":1} or {"congested":0} on TOPIC_CONGESTION.
+      if(strstr(payload, "congested") != NULL) {
+        if(strstr(payload, "\"congested\":1") != NULL) {
+          congested = true;
+          // Mechanism 1: slower sampling (one step, up to MAX_INTERVAL)
+          current_interval *= 2;
+          if(current_interval > MAX_INTERVAL) {
+            current_interval = MAX_INTERVAL;
+          }
+          // Mechanism 2: higher threshold -> fewer messages
+          temp_threshold = TEMP_THRESHOLD_CONGESTED;
+          LOG_WARN("[ADAPT] Congestion: period=%lu s, threshold=2.0 C\n",
+                   (unsigned long)(current_interval / CLOCK_SECOND));
+        } else {
+          congested = false;
+          // Mechanism 1: faster sampling (one step, down to BASE_INTERVAL)
+          current_interval /= 2;
+          if(current_interval < BASE_INTERVAL) {
+            current_interval = BASE_INTERVAL;
+          }
+          // Mechanism 2: back to the fine threshold
+          temp_threshold = TEMP_THRESHOLD_NORMAL;
+          LOG_INFO("[ADAPT] Normal: period=%lu s, threshold=0.5 C\n",
+                   (unsigned long)(current_interval / CLOCK_SECOND));
+        }
+      }
+      break;
+    }
+    // ===== [END ADAPTIVE MECHANISM - NEW] =====
     default:
       break;
   }
@@ -76,6 +176,73 @@ static bool have_connectivity(void) {
   if(uip_ds6_get_global(ADDR_PREFERRED) == NULL || uip_ds6_defrt_choose() == NULL) {return false; }
   return true;
 }
+
+// ===== [PUBLISH ROBUSTNESS - NEW] Centralized publish with retry + reconnect =====
+// Tries to publish; on OUT_QUEUE_FULL it retries a few times immediately.
+// On success it clears the failure counter. On repeated failure it increments
+// consecutive_pub_failures and, past MAX_CONSECUTIVE_FAILURES, forces a clean
+// MQTT reconnect (disconnect + go back to STATE_DISCONNECTED) so the node keeps
+// running under stress instead of getting stuck with a full queue.
+static void try_publish(const char *topic, const char *payload) {
+  mqtt_status_t st = MQTT_STATUS_OUT_QUEUE_FULL;
+  int attempt;
+
+  for(attempt = 0; attempt < MAX_PUBLISH_RETRIES; attempt++) {
+    st = mqtt_publish(&conn, NULL, (char *)topic, (uint8_t *)payload,
+                      strlen(payload), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+    if(st == MQTT_STATUS_OK) {
+      break;
+    }
+  }
+
+  if(st == MQTT_STATUS_OK) {
+    consecutive_pub_failures = 0;
+  } else {
+    consecutive_pub_failures++;
+    LOG_ERR("Publish failed on %s, status=%d (consecutive=%d)\n",
+            topic, st, consecutive_pub_failures);
+    if(consecutive_pub_failures >= MAX_CONSECUTIVE_FAILURES) {
+      LOG_WARN("Too many publish failures. Forcing MQTT reconnect...\n");
+      mqtt_disconnect(&conn);
+      state = STATE_DISCONNECTED;
+      consecutive_pub_failures = 0;
+    }
+  }
+}
+// ===== [END PUBLISH ROBUSTNESS - NEW] =====
+
+// ===== [MQTT REGISTRATION - NEW] Publish a registration message once =====
+// Sends {"id":..., "type":..., "ip":...} on the registration topic so the
+// Cloud can add this node to the DB directory and ping it for latency.
+// Returns true only if the publish was accepted by the MQTT queue.
+static bool publish_registration(void) {
+  // ===== [BUGFIX - NEW] Buffers MUST be static: mqtt_publish keeps the pointer
+  // and serializes asynchronously, so a stack buffer would be overwritten
+  // before the packet is sent (caused a corrupted registration payload). =====
+  static char reg_payload[128];
+  static char ipbuf[48];
+  // ===== [END BUGFIX - NEW] =====
+  uip_ds6_addr_t *lladdr = uip_ds6_get_global(ADDR_PREFERRED);
+  if(lladdr != NULL) {
+    uiplib_ipaddr_snprint(ipbuf, sizeof(ipbuf), &lladdr->ipaddr);
+  } else {
+    strcpy(ipbuf, "::");
+  }
+  // Compact JSON (no spaces) to match the Cloud/firmware string parsers.
+  snprintf(reg_payload, sizeof(reg_payload),
+           "{\"id\":\"%s\",\"type\":\"%s\",\"ip\":\"%s\"}", CLIENT_ID, NODE_TYPE, ipbuf);
+  // RETAIN so the broker keeps this message and delivers it to the Cloud even
+  // if the Cloud subscribes to 'registration' later.
+  mqtt_status_t st = mqtt_publish(&conn, NULL, TOPIC_REGISTRATION, (uint8_t *)reg_payload,
+                                  strlen(reg_payload), MQTT_QOS_LEVEL_0, MQTT_RETAIN_ON);
+  if(st == MQTT_STATUS_OK) {
+    LOG_INFO("[REGISTRATION] Sent: %s\n", reg_payload);
+    return true;
+  }
+  LOG_ERR("[REGISTRATION] Publish failed (status=%d). Will retry.\n", st);
+  return false;
+}
+// ===== [END MQTT REGISTRATION - NEW] =====
 
 PROCESS_THREAD(mqtt_temperature_process, ev, data)
 {
@@ -122,27 +289,56 @@ PROCESS_THREAD(mqtt_temperature_process, ev, data)
       }
     }
 
-    // STATE_CONNECTED
+    // ===== [ADAPTIVE MECHANISM 1 / REGISTRATION - NEW] Subscribe and register =====
+    // STATE_CONNECTED: subscribe to the congestion topic.
     if(state == STATE_CONNECTED) {
+      LOG_INFO("Sending Subscribe request to %s\n", TOPIC_CONGESTION);
+      mqtt_subscribe(&conn, NULL, TOPIC_CONGESTION, MQTT_QOS_LEVEL_0);
+
+      state = STATE_SUBSCRIBING; // Wait for the SUBACK from the callback
+    }
+    // ===== [END ADAPTIVE MECHANISM 1 / REGISTRATION - NEW] =====
+
+    // STATE_SUBSCRIBED
+    // ===== [ADAPTIVE MECHANISM - MODIFIED] Publishing now happens in STATE_SUBSCRIBED =====
+    if(state == STATE_SUBSCRIBED) {
+
+      // ===== [MQTT REGISTRATION - NEW] Register once, after SUBACK (queue is free) =====
+      // Done here (not in STATE_CONNECTED) so the SUBSCRIBE has already left the
+      // TX queue and the registration PUBLISH does not fail with OUT_QUEUE_FULL.
+      // Retries next cycle if it still fails.
+      if(!registered) {
+        if(publish_registration()) {
+          registered = true;
+        }
+      }
+      // ===== [END MQTT REGISTRATION - NEW] =====
+
       float current_temp = module_temp_array[current_step]; // Read temperature
       
       int temp_int = (int)current_temp;
       int temp_frac = (int)(fabs(current_temp - temp_int) * 100 + 0.5);
 
       // Check if a significant change occurred
-      if(fabs(current_temp - last_published_temp) >= TEMP_THRESHOLD || cycles_without_publish >= MAX_IDLE_CYCLES) {
-        // JSON payload creation
+      // ===== [ADAPTIVE MECHANISM 2 - MODIFIED] Use the adaptive threshold =====
+      if(fabs(current_temp - last_published_temp) >= temp_threshold || cycles_without_publish >= MAX_IDLE_CYCLES) {
+      // ===== [END ADAPTIVE MECHANISM 2 - MODIFIED] =====
+        // ===== [INSTRUMENTATION - NEW] Advance seq and add "seq" field =====
+        seq_num++;
         snprintf(app_buffer, APP_BUFFER_SIZE, 
-                 "{\"bn\":\"%s\", \"n\":\"module_temp\", \"v\":%d.%02d, \"u\":\"Cel\"}", 
-                 CLIENT_ID, temp_int, temp_frac);
+                 "{\"bn\":\"%s\", \"n\":\"module_temp\", \"v\":%d.%02d, \"u\":\"Cel\", \"seq\":%lu}", 
+                 CLIENT_ID, temp_int, temp_frac, (unsigned long)seq_num);
+        // ===== [END INSTRUMENTATION - NEW] =====
         
         if(cycles_without_publish >= MAX_IDLE_CYCLES) {
             LOG_INFO("Security Heartbeat (45s), Publishing: %s\n", app_buffer);
         } else {
-            LOG_INFO("Variation (> 0.5 C). Publishing: %s\n", app_buffer);
+            LOG_INFO("Variation (>= threshold). Publishing: %s\n", app_buffer);
         }
         
-        mqtt_publish(&conn, NULL, TOPIC_TEMPERATURE, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+        // ===== [PUBLISH ROBUSTNESS - NEW] Robust publish (retry + reconnect) =====
+        try_publish(TOPIC_TEMPERATURE, app_buffer);
+        // ===== [END PUBLISH ROBUSTNESS - NEW] =====
         
         last_published_temp = current_temp;
         cycles_without_publish = 0; /* Reset the counter because we just published */
@@ -159,7 +355,10 @@ PROCESS_THREAD(mqtt_temperature_process, ev, data)
       }
     }
 
-    etimer_reset(&timer);
+    // ===== [ADAPTIVE MECHANISM 1 - MODIFIED] Reschedule with the adaptive period =====
+    // Equals BASE_INTERVAL when not congested, larger under congestion.
+    etimer_set(&timer, current_interval);
+    // ===== [END ADAPTIVE MECHANISM 1 - MODIFIED] =====
   }
 
   PROCESS_END();
