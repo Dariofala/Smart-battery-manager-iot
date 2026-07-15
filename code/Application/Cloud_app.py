@@ -331,7 +331,14 @@ async def observe_sensor(client_ip, node_id, node_type):
     except Exception as e:
         log_print(f"[CoAP ERROR] Error on {node_id}: {e}")
     finally:
-        if node_id in active_observes and active_observes[node_id]['ip'] == client_ip:
+        # Remove the entry ONLY if it still belongs to THIS task.
+        # Comparing task identity (not just the IP) prevents an old task's
+        # finally from deleting the entry of a newly recreated task on
+        # reconnection — a real issue on nRF52840, where the IPv6 address is
+        # derived from the EUI-64 and stays identical across reconnects.
+        current = asyncio.current_task()
+        if (node_id in active_observes
+                and active_observes[node_id].get('task') is current):
             del active_observes[node_id]
 
 
@@ -369,12 +376,25 @@ class RegistrationResource(resource.Resource):
                 asyncio.create_task(self.flush_pending_sensors())
 
             elif node_type in ["power", "irradiation"]:
-                if node_id in active_observes:
-                    log_print(f"[CoAP RECOVERY] Node {node_id} IP may be different. Reconnecting...")
-                    # Kill the old task that was listening to the dead IP
-                    active_observes[node_id]['task'].cancel()
-                    
-                # Create the new task pointing to the NEW IP, but save it using the ID
+                # Pop the old entry FIRST so the old task's finally can't delete
+                # a freshly created entry, then wait for the old task to finish
+                # its cancellation (and run its finally) before recreating it.
+                # This makes the teardown/recreate order deterministic and fixes
+                # the race where a reconnecting node registers OK but never
+                # resumes delivering telemetry.
+                old = active_observes.pop(node_id, None)
+                if old is not None:
+                    log_print(f"[CoAP RECOVERY] Node {node_id} reconnecting. Cancelling old observe...")
+                    old['task'].cancel()
+                    try:
+                        await old['task']  # let the old task run its finally to completion
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        pass
+
+                # Now active_observes is clean: create the new task pointing to
+                # the NEW IP and register it under the node ID.
                 task = asyncio.create_task(observe_sensor(client_ip, node_id, node_type))
                 # Save both the task and the IP for diagnostics
                 active_observes[node_id] = {'task': task, 'ip': client_ip}
