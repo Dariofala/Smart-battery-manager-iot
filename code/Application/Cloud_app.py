@@ -5,11 +5,9 @@ import paho.mqtt.client as mqtt
 import aiocoap
 import aiocoap.resource as resource
 
-# ===== [METRICS/CONGESTION - NEW] Extra imports =====
-import time                 # window timing
-import threading            # protect counters shared between MQTT thread and asyncio
-import subprocess           # run ping6 to measure latency
-# ===== [END METRICS/CONGESTION - NEW] =====
+import time               
+import threading  
+import subprocess  
 
 # InfluxDB Imports
 from influxdb_client import InfluxDBClient, Point
@@ -52,12 +50,11 @@ STATE_CODES = {
     "EMERGENCY: Safe Mode Active": 0,
 }
 
-# ===== [METRICS/CONGESTION - NEW] Config and shared state =====
-# The 4 sensors we track for the metrics (keys used everywhere below).
+# The 4 sensors we track for the metrics 
 SENSOR_KEYS = ["power", "irradiation", "battery", "temperature"]
 
-# Map the SenML base-name ("bn") / node_type to a sensor key.
-# CoAP nodes are tracked by node_type, MQTT nodes by their "bn".
+# Map the SenML base-name ("bn") / node_type to a sensor key
+# CoAP nodes are tracked by node_type, MQTT nodes by their "bn"
 BN_TO_KEY = {
     "nRF52840-Battery": "battery",
     "nRF52840-Temperature": "temperature",
@@ -65,34 +62,30 @@ BN_TO_KEY = {
 
 WINDOW_SECONDS = 60          # metrics window = normal sampling period
 PDR_THRESHOLD = 0.7          # below this (and >=1 pkt per sensor) => congestion
-# DA RIVEDERE (se togliere o no)
-MAX_INTERVAL_S = 60          # only used for documentation/reference
 
 # Congestion signalling topics/paths
 CONGESTION_TOPIC = "network/congestion"     # MQTT nodes subscribe here
 CONGESTION_COAP_PATH = "control/congestion" # CoAP nodes expose this resource
 
-# Per-sensor sequence tracking, used to compute PDR from seq gaps.
-# For each sensor: first/last seq seen and how many packets actually arrived
-# inside the current window.
+# Per-sensor sequence tracking, used to compute PDR from seq gaps
+# For each sensor: first/last seq seen and how many packets actually arrived inside the current window
 seq_state = {
     k: {"first": None, "last": None, "received": 0} for k in SENSOR_KEYS
 }
 
-# Total messages received in the current window (all sensors together).
+# Total messages received in the current window 
 msg_count_window = 0
 
-# Current congestion status (as seen by the Cloud).
+# Current congestion status
 is_congested = False
 
 # One lock protects all the counters above, because they are updated from the
 # MQTT background thread (on_message) AND from the asyncio loop (observe_sensor).
 metrics_lock = threading.Lock()
 
-# MQTT nodes that registered their own IPv6, so latency (ping6) can reach them.
+# MQTT nodes that registered their own IPv6, so latency (ping6) can reach them
 # Shape: {"battery": "fd00::...", "temperature": "fd00::..."}
 mqtt_node_ips = {}
-# ===== [END METRICS/CONGESTION - NEW] =====
 
 # Helper function to print logs only if 'show' mode is active
 def log_print(msg):
@@ -116,7 +109,6 @@ def write_measurement(device, measurement_type, value, extra_tags=None):
     except Exception as e:
         log_print(f"[INFLUX ERROR] write failed for {device}/{measurement_type}: {e}")
 
-
 def write_event(category, message, state=None):
     # Write a discrete event (alarm, state transition, command) into a
     # separate 'iot_events' measurement, so dashboards can annotate the timeline
@@ -131,7 +123,6 @@ def write_event(category, message, state=None):
     except Exception as e:
         log_print(f"[INFLUX ERROR] event write failed: {e}")
 
-
 def persist_registration(node_id, node_type, endpoint):
     # Persist the node directory into the 'registry' measurement, so the list of
     # registered sensors/actuators lives in the database (not only in RAM)
@@ -143,7 +134,6 @@ def persist_registration(node_id, node_type, endpoint):
         write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
     except Exception as e:
         log_print(f"[INFLUX ERROR] registry write failed: {e}")
-
 
 def set_system_state(state_label):
     # Update the in-RAM state (for the CLI table) and persist it to InfluxDB
