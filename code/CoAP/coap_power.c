@@ -13,22 +13,16 @@
 #define LOG_MODULE "CoAP Sensor (Power)"
 #define LOG_LEVEL LOG_LEVEL_INFO
 
-
-// DA ROVEDERE SE TOGLIERE UNO DEGLI INTERVAL
 // Time between each sample
 #define SAMPLING_INTERVAL (15 * CLOCK_SECOND)
 
-// ===== [ADAPTIVE MECHANISM - NEW] Adaptive sampling config and state =====
-// The Cloud detects congestion and tells us via the control/congestion resource.
-// On congestion we double the period (step by step) up to MAX_INTERVAL.
-// On normal we halve it (step by step) back to BASE_INTERVAL.
-#define BASE_INTERVAL  (15 * CLOCK_SECOND)   // normal sampling period
+// On congestion we double the period up to MAX_INTERVAL
+// On normal we halve it back to BASE_INTERVAL
+#define BASE_INTERVAL  (15 * CLOCK_SECOND)   // Stress Test set to 0.2s
 #define MAX_INTERVAL   (60 * CLOCK_SECOND)   // slowest period under congestion
 
 static clock_time_t current_interval = BASE_INTERVAL; // period in use now
-static bool congested = false;                        // last state from Cloud
-// ===== [END ADAPTIVE MECHANISM - NEW] =====
-
+static bool congested = false; 
 
 // REGISTRATION CONFIGURATION 
 #define SERVER_EP "coap://[fd00::1]:5683"
@@ -45,14 +39,11 @@ static coap_message_t request[1]; // The CoAP request packet
 
 static uint8_t reg_state = STATE_INIT;
 
-
 // Global index to iterate through the dataset array
 static int current_step = 0;
 
-// ===== [INSTRUMENTATION - NEW] Sequence number for PDR =====
-// Attached to every telemetry payload. The Cloud uses seq gaps to compute PDR.
+// The Cloud uses seq gaps to compute PDR
 static uint32_t seq_num = 0;
-// ===== [END INSTRUMENTATION - NEW] =====
 
 // OBSERVABLE RESOURCE DEFINITION (CoAP Observe)
 
@@ -68,20 +59,16 @@ static void res_event_handler(void) {
   coap_notify_observers(&res_power);
 }
 
-// ===== [ADAPTIVE MECHANISM - NEW] Congestion control resource =====
-// The Cloud POSTs {"congested":1} or {"congested":0} here.
-// congested -> double the period (one step) up to MAX_INTERVAL.
-// normal    -> halve the period (one step) down to BASE_INTERVAL.
+// The Cloud publishes {"congested":1} or {"congested":0} on TOPIC_CONGESTION
 static void res_congestion_post_handler(coap_message_t *request, coap_message_t *response,
                                         uint8_t *buffer, uint16_t preferred_size, int32_t *offset) {
   const uint8_t *payload = NULL;
   int len = coap_get_payload(request, &payload);
 
   if(payload != NULL && len > 0) {
-    // Compact parsing: look for "congested":1 (spaces are not expected).
     if(strstr((const char *)payload, "\"congested\":1") != NULL) {
       congested = true;
-      current_interval *= 2;                       // one step slower
+      current_interval *= 2;  // one step slower
       if(current_interval > MAX_INTERVAL) {
         current_interval = MAX_INTERVAL;
       }
@@ -89,7 +76,7 @@ static void res_congestion_post_handler(coap_message_t *request, coap_message_t 
                (unsigned long)(current_interval / CLOCK_SECOND));
     } else {
       congested = false;
-      current_interval /= 2;                        // one step faster
+      current_interval /= 2;  // one step faster
       if(current_interval < BASE_INTERVAL) {
         current_interval = BASE_INTERVAL;
       }
@@ -103,7 +90,6 @@ static void res_congestion_post_handler(coap_message_t *request, coap_message_t 
 
 // POST-only resource exposed at control/congestion
 RESOURCE(res_congestion, "title=\"Congestion control\"", NULL, res_congestion_post_handler, NULL, NULL);
-// ===== [END ADAPTIVE MECHANISM - NEW] =====
 
 // GET handler: builds the JSON payload to be sent
 static void res_get_handler(coap_message_t *request, coap_message_t *response, uint8_t *buffer, uint16_t preferred_size, int32_t *offset) {
@@ -114,12 +100,9 @@ static void res_get_handler(coap_message_t *request, coap_message_t *response, u
   int p_frac = (int)(fabs(current_power - p_int) * 100 + 0.5);
 
   //JSON formatting --> it uses %d.%02d because power has 2 decimals in the dataset
-  // ===== [INSTRUMENTATION - NEW] Added "seq" field =====
   snprintf((char *)buffer, preferred_size, 
            "{\"bn\":\"nRF52840-SensorPower\", \"n\":\"ac_power\", \"v\":%d.%02d, \"u\":\"W\", \"seq\":%lu}", 
            p_int, p_frac, (unsigned long)seq_num);
-  // ===== [END INSTRUMENTATION - NEW] =====
-
   size_t len = strlen((char *)buffer);
   
   // Set the CoAP header to indicate the content is JSON
@@ -168,9 +151,7 @@ PROCESS_THREAD(coap_sensor_process, ev, data)
   // Bind the resource to the correct URI "/telemetry/power"
   coap_activate_resource(&res_power, "telemetry/power");
 
-  // ===== [ADAPTIVE MECHANISM - NEW] Expose the congestion control resource =====
   coap_activate_resource(&res_congestion, "control/congestion");
-  // ===== [END ADAPTIVE MECHANISM - NEW] =====
 
   etimer_set(&timer, SAMPLING_INTERVAL);
 
@@ -180,7 +161,7 @@ PROCESS_THREAD(coap_sensor_process, ev, data)
     // Check if the IPv6 network is ready and the Border Router is reachable 
     if(have_connectivity()) {
       
-      // PHASE 1: CLOUD REGISTRATION
+      // CLOUD REGISTRATION
       if(reg_state == STATE_INIT) {
         LOG_INFO("[REGISTRATION] Sending POST request to %s\n", SERVER_EP);
         
@@ -188,7 +169,7 @@ PROCESS_THREAD(coap_sensor_process, ev, data)
         coap_init_message(request, COAP_TYPE_CON, COAP_POST, 0);
         coap_set_header_uri_path(request, "registration");
         
-        /* Create the JSON payload: {"id": "nRF52840-Power", "type": "power"} */
+        // Create the JSON payload: {"id": "nRF52840-Power", "type": "power"}
         static char reg_payload[64];
         snprintf(reg_payload, sizeof(reg_payload), "{\"id\":\"%s\", \"type\":\"%s\"}", NODE_ID, NODE_TYPE);
         coap_set_payload(request, (uint8_t *)reg_payload, strlen(reg_payload));
@@ -198,7 +179,7 @@ PROCESS_THREAD(coap_sensor_process, ev, data)
         COAP_BLOCKING_REQUEST(&server_ep, request, registration_callback);
       }
       
-      // PHASE 2: TELEMETRY 
+      // TELEMETRY 
       else if(reg_state == STATE_REGISTERED) {
         
         current_step++;
@@ -212,9 +193,7 @@ PROCESS_THREAD(coap_sensor_process, ev, data)
 
         LOG_INFO("Simulated sampling: Step %d, Value: %d.%02d W\n", current_step, val_int, val_frac);
                 
-        // ===== [INSTRUMENTATION - NEW] Advance seq before notifying observers =====
         seq_num++;
-        // ===== [END INSTRUMENTATION - NEW] =====
 
         // Trigger the CoAP event. This single line implements the entire Observe pattern towards the Actuator/Cloud
         res_power.trigger();
@@ -225,10 +204,7 @@ PROCESS_THREAD(coap_sensor_process, ev, data)
         reg_state = STATE_INIT; // Reset registration state if we lose connectivity 
     }
 
-    // ===== [ADAPTIVE MECHANISM - NEW] Reschedule with the adaptive period =====
-    // Equals BASE_INTERVAL when not congested, larger under congestion.
     etimer_set(&timer, current_interval);
-    // ===== [END ADAPTIVE MECHANISM - NEW] =====
   }
 
   PROCESS_END();

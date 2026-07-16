@@ -40,6 +40,8 @@ static char app_buffer[APP_BUFFER_SIZE];
 #define TEMP_THRESHOLD_CONGESTED 2.0
 static float temp_threshold = TEMP_THRESHOLD_NORMAL;
 static float last_published_temp = -100.0; // Dummy initialization to force the 1st transmission
+
+// Global index to iterate through the dataset array
 static int current_step = 0;
 
 // Heartbeat counter 

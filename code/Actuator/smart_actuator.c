@@ -15,13 +15,13 @@
 #include <stdio.h>
 #include <math.h>
 
-/* Machine Learning Model */
+// Machine Learning Model
 #include "smart_battery_model.h"
 
 #define LOG_MODULE "Smart Actuator"
 #define LOG_LEVEL LOG_LEVEL_INFO
 
-/* --- NETWORK CONFIGURATIONS --- */
+// NETWORK CONFIGURATIONS
 #define BROKER_IP "fd00::1" 
 #define BROKER_PORT 1883
 #define CLIENT_ID "nRF52840-Actuator"
@@ -44,7 +44,7 @@ static coap_message_t reg_request[1];
 static bool power_ep_known = false;
 static bool irr_ep_known = false;
 
-/* MQTT Topics */
+// MQTT Topics
 #define TOPIC_SUBSCRIBE_ALL   "network/#" 
 #define TOPIC_COMMANDS        "network/commands/battery"
 #define TOPIC_ALARMS          "network/alarms"
@@ -54,11 +54,11 @@ static char sensors_buffer[APP_BUFFER_SIZE];
 static char alarms_buffer[APP_BUFFER_SIZE];
 #define MAX_TCP_SEGMENT_SIZE 128
 
-/* --- Machine Learning Features --- */
+// Machine Learning Features
 static const float FEATURE_MEAN[5]  = { 277.4355f, 277.7913f, 0.2324f, 0.2329f, 32.0750f };
 static const float FEATURE_SCALE[5] = { 380.5854f, 380.6051f, 0.3069f, 0.3076f, 11.8827f };
 
-/* --- State Variables --- */
+// State Variables
 static float current_power = 0.0, prev_power = 0.0;
 static float current_irr = 0.0,   prev_irr = 0.0;
 static float current_temp = 0.0;
@@ -68,12 +68,9 @@ static bool first_cycle_done = false;
 static uint32_t last_temp_timestamp = 0;
 static uint32_t last_power_timestamp = 0;
 static uint32_t last_irr_timestamp = 0;
-// ===== [STRESS TEST - MODIFIED] Raised from 60s to 90s so the sampling
-// back-off under congestion (up to 60s) does not trigger a false Safe Mode =====
 #define SAFE_MODE_TIMEOUT (90 * CLOCK_SECOND)
-// ===== [END STRESS TEST - MODIFIED] =====
 
-/* --- FSM (Finite State Machine) Configurations --- */
+// FSM (Finite State Machine) Configurations 
 #define ACT_STATE_PV    1
 #define ACT_STATE_BATT  2
 #define ACT_STATE_GRID  3
@@ -83,13 +80,9 @@ static uint8_t recovery_counter = 0;
 #define PV_THRESHOLD 140.0
 #define CRITICAL_SOC 20.0
 
-// ===== [SAFE MODE EXIT - NEW] Remember previous Safe Mode status =====
-// Lets us detect the Safe Mode -> normal transition and publish a recovery
-// state, so Grafana leaves the "Safe Mode" state instead of staying stuck.
 static bool was_safe_mode = false;
-// ===== [END SAFE MODE EXIT - NEW] =====
 
-/* MQTT and CoAP Structures */
+// MQTT and CoAP Structures
 static struct mqtt_connection conn;
 static mqtt_status_t status;
 static coap_endpoint_t ep_power;
@@ -106,23 +99,20 @@ static coap_observee_t *obs_irr;
 
 static uint8_t mqtt_state = STATE_INIT;
 
-// ===== [PUBLISH ROBUSTNESS - NEW] Retry + forced reconnect config/state =====
-// A publish can fail with MQTT_STATUS_OUT_QUEUE_FULL when the TCP queue is full.
-// We retry a few times immediately; if it keeps failing we count consecutive
-// failures and, past a threshold, force a clean reconnect so the node recovers.
+// A telemetry publish can fail with MQTT_STATUS_OUT_QUEUE_FULL when the TCP queue is full
+// If it keeps failing we count consecutive failures and past a threshold,
+// force a  reconnect so the node recovers instead of dying
 #define MAX_PUBLISH_RETRIES        3   // immediate retries per publish
 #define MAX_CONSECUTIVE_FAILURES   5   // failed publishes before forcing reconnect
 static uint8_t consecutive_pub_failures = 0;
 
-// Forward declaration: try_publish is used inside mqtt_event (below) but
-// defined later, so we declare its prototype here.
+// Forward declaration: used in the process below
 static void try_publish(const char *topic, const char *payload);
-// ===== [END PUBLISH ROBUSTNESS - NEW] =====
 
 PROCESS(smart_actuator_process, "Smart Actuator Process");
 AUTOSTART_PROCESSES(&smart_actuator_process);
 
-/* --- Support function: extracts the value from JSON --- */
+// Support function: extracts the value from JSON 
 static float extract_json_value(const char* payload) {
   if(payload == NULL) return 0.0;
 
@@ -190,7 +180,7 @@ static void res_register_post_handler(coap_message_t *request, coap_message_t *r
   coap_set_status_code(response, CHANGED_2_04);
 }
 
-/* --- Callback functions for CoAP observations --- */
+// Callback functions for CoAP observations 
 static void notification_callback_power(coap_observee_t *obs, void *notification, coap_notification_flag_t flag) {
   if(notification) {
     const uint8_t *payload = NULL;
@@ -217,7 +207,7 @@ static void notification_callback_irr(coap_observee_t *obs, void *notification, 
   }
 }
 
-/* --- Callback function for MQTT events --- */
+// Callback function for MQTT events
 static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data) {
   switch(event) {
     case MQTT_EVENT_CONNECTED:
@@ -243,7 +233,7 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
       char payload[128];
       snprintf(payload, sizeof(payload), "%.*s", msg->payload_length, (char *)msg->payload_chunk);
 
-      /* Reaction to Alarm received by Application's CLI */
+      // Reaction to Alarm received by Application's CLI
       if(strcmp(msg->topic, TOPIC_ALARMS) == 0) {
         if(strstr(payload, "Simulating Power collapse") != NULL) {
           LOG_WARN("[CLI ALARM] Received Alarm from Application's CLI. Forcing State 2.\n");
@@ -258,7 +248,7 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
         break;
       }
 
-      /* 3. Parsing Telemetry (TEMPERATURE / BATTERY SOC) */
+      // Parsing Telemetry (TEMPERATURE / BATTERY SOC)
       if(strstr(payload, "module_temp") != NULL) {
         current_temp = extract_json_value(payload);
         last_temp_timestamp = clock_time();
@@ -283,12 +273,7 @@ static bool have_connectivity(void) {
   return !(uip_ds6_get_global(ADDR_PREFERRED) == NULL || uip_ds6_defrt_choose() == NULL);
 }
 
-// ===== [PUBLISH ROBUSTNESS - NEW] Centralized publish with retry + reconnect =====
-// Tries to publish; on OUT_QUEUE_FULL it retries a few times immediately.
-// On success it clears the failure counter. On repeated failure it increments
-// consecutive_pub_failures and, past MAX_CONSECUTIVE_FAILURES, forces a clean
-// MQTT reconnect (disconnect + go back to STATE_DISCONNECTED) so the FSM
-// recovers instead of staying "mute" forever.
+// Tries to publish; on OUT_QUEUE_FULL it retries a few times immediately
 static void try_publish(const char *topic, const char *payload) {
   mqtt_status_t st = MQTT_STATUS_OUT_QUEUE_FULL;
   int attempt;
@@ -297,19 +282,16 @@ static void try_publish(const char *topic, const char *payload) {
     st = mqtt_publish(&conn, NULL, (char *)topic, (uint8_t *)payload,
                       strlen(payload), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
     if(st == MQTT_STATUS_OK) {
-      break;   // sent, stop retrying
+      break; 
     }
   }
 
   if(st == MQTT_STATUS_OK) {
-    consecutive_pub_failures = 0;   // healthy again
+    consecutive_pub_failures = 0;   
   } else {
     consecutive_pub_failures++;
     LOG_ERR("Publish failed on %s, status=%d (consecutive=%d)\n",
             topic, st, consecutive_pub_failures);
-
-    // Too many failures in a row: the TCP link is likely stuck. Force a clean
-    // reconnect so the next cycles rebuild the MQTT session from scratch.
     if(consecutive_pub_failures >= MAX_CONSECUTIVE_FAILURES) {
       LOG_WARN("Too many publish failures. Forcing MQTT reconnect...\n");
       mqtt_disconnect(&conn);
@@ -318,7 +300,6 @@ static void try_publish(const char *topic, const char *payload) {
     }
   }
 }
-// ===== [END PUBLISH ROBUSTNESS - NEW] =====
 
 PROCESS_THREAD(smart_actuator_process, ev, data)
 {
@@ -330,7 +311,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
 
   LOG_INFO("Starting Smart Actuator (3-State FSM)...\n");
 
-  /* Initialization */
+  // Initialization
   coap_engine_init();
   mqtt_register(&conn, &smart_actuator_process, CLIENT_ID, mqtt_event, MAX_TCP_SEGMENT_SIZE);
   uiplib_ipaddrconv(BROKER_IP, &broker_address);
@@ -341,8 +322,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
 
   coap_activate_resource(&res_register_sensor, "control/register_sensor");
 
-
-  /* Actuator Timer */
+  // Actuator Timer
   etimer_set(&ai_timer, 20 * CLOCK_SECOND);
 
   while(1) {
@@ -365,11 +345,11 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                 leds_off(LEDS_ALL);
                 leds_single_on(LEDS_YELLOW);
                 
-                /* Send command to the battery to unlock it from the critical state */
+                // Send command to the battery to unlock it from the critical state 
                 snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
                 try_publish(TOPIC_COMMANDS, sensors_buffer);
 
-                /* Timer to clear the MQTT outbound queue before sending the alarm message */
+                // Timer to clear the MQTT outbound queue before sending the alarm message
                 etimer_set(&spacing_timer, CLOCK_SECOND / 2);
                 PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
 
@@ -382,9 +362,9 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
     // TIMER
     else if(ev == PROCESS_EVENT_TIMER && data == &ai_timer) {
 
-    /* MQTT network management */
+    // MQTT network management
     if(have_connectivity()) {
-      //Registration of the actuator to the cloud application
+      // Registration of the actuator to the cloud application
       if(reg_state == STATE_REG_INIT) {
         LOG_INFO("[REGISTRATION] Sending POST request to %s\n", SERVER_EP);
         coap_endpoint_parse(SERVER_EP, strlen(SERVER_EP), &cloud_ep);
@@ -408,14 +388,14 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
       }
 
       if(mqtt_state == STATE_CONNECTED) {
-        /* Subscribe using wildcard to get both temperature and battery updates */
+        // Subscribe using wildcard to get both temperature and battery updates
         mqtt_subscribe(&conn, NULL, TOPIC_SUBSCRIBE_ALL, MQTT_QOS_LEVEL_0);
         mqtt_state = STATE_SUBSCRIBING;
         LOG_INFO("Subscribing to MQTT Telemetry Topics...\n");
       }
     }
 
-    /* CoAP observe management */
+    // CoAP observe management
     if(obs_power == NULL && power_ep_known) {
       LOG_INFO("Starting CoAP Observe for Power...\n");
       obs_power = coap_obs_request_registration(&ep_power, "telemetry/power", notification_callback_power, NULL);
@@ -426,13 +406,13 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
       obs_irr = coap_obs_request_registration(&ep_irr, "telemetry/irradiation", notification_callback_irr, NULL);
     }
 
-    /* Safe Mode Control */
+    // Safe Mode Control
     if(mqtt_state == STATE_SUBSCRIBED) {
       
       static bool is_safe_mode;
       is_safe_mode = false;
 
-      /* Controls on sensor timeouts */
+      // Controls on sensor timeouts
       if ((clock_time() - last_temp_timestamp) > SAFE_MODE_TIMEOUT && last_temp_timestamp != 0) {
         LOG_WARN("!!! SAFE MODE ACTIVE !!! Timeout temperature sensor.\n");
         is_safe_mode = true;
@@ -442,7 +422,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
         is_safe_mode = true;
         if (obs_power != NULL) {  
           coap_obs_remove_observee(obs_power); 
-          obs_power = NULL; /* to reconnect on next round */
+          obs_power = NULL; // to reconnect on next round
         }
       }
       if ((clock_time() - last_irr_timestamp) > SAFE_MODE_TIMEOUT && last_irr_timestamp != 0) {
@@ -450,18 +430,18 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
         is_safe_mode = true;
         if (obs_irr != NULL) {
           coap_obs_remove_observee(obs_irr); 
-          obs_irr = NULL; /* to reconnect on next round */
+          obs_irr = NULL; // to reconnect on next round
         }
       }
 
-      /* === CORE LOGIC: 3-STATE FINITE STATE MACHINE === */
+      // === CORE LOGIC: 3-STATE FINITE STATE MACHINE
       if(first_cycle_done && !is_safe_mode) {
         
-        /* STATE 1: PV REGIME */
+        // STATE 1: PV REGIME 
         if (system_state == ACT_STATE_PV) {
             
             float features[5];
-            /* [0] AC_POWER, [1] AC_POWER_t-1, [2] IRRADIATION, [3] IRRADIATION_t-1, [4] MODULE_TEMPERATURE */
+            // [0] AC_POWER, [1] AC_POWER_t-1, [2] IRRADIATION, [3] IRRADIATION_t-1, [4] MODULE_TEMPERATURE
             features[0] = (current_power - FEATURE_MEAN[0]) / FEATURE_SCALE[0];
             features[1] = (prev_power    - FEATURE_MEAN[1]) / FEATURE_SCALE[1];
             features[2] = (current_irr   - FEATURE_MEAN[2]) / FEATURE_SCALE[2];
@@ -472,7 +452,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
             LOG_INFO("AI Prediction Result: %d\n", prediction);
 
             if(prediction == 1) {
-                /* TRANSITION 1 -> 2: Collapse Predicted */
+                // TRANSITION 1 -> 2: Collapse Predicted
                 system_state = ACT_STATE_BATT;
                 recovery_counter = 0; // Reset recovery threshold
                 
@@ -489,7 +469,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                 snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"Collapse predicted. Entering Battery Mode.\"}");
                 try_publish(TOPIC_ALARMS, alarms_buffer);
             } else if (current_power < PV_THRESHOLD) {
-              /* TRANSITION 1 -> 2: not enough power generation */
+              // TRANSITION 1 -> 2: not enough power generation
                 system_state = ACT_STATE_BATT;
                 recovery_counter = 0; // Reset recovery threshold
                 
@@ -507,27 +487,24 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                 snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"Not enough power generation. Entering Battery Mode.\"}");
                 try_publish(TOPIC_ALARMS, alarms_buffer); 
             } else {
-                /* Maintain State 1 */
+                // Maintain State 1
                 leds_off(LEDS_ALL);
                 leds_on(LEDS_GREEN);
                 snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"charge\"}");
                 LOG_INFO("Maintaining PV Regime. Sending charge command to battery.\n");
                 try_publish(TOPIC_COMMANDS, sensors_buffer);
-                // ===== [STATE SYNC - NEW] Also report current state so the Cloud
-                // (and Grafana) stays aligned even without a transition, e.g. after
-                // exiting Safe Mode. "PV Mode" is the keyword the Cloud maps to STATE 1. =====
+
                 etimer_set(&spacing_timer, CLOCK_SECOND / 2);
                 PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
                 snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"info\":\"Maintaining PV Mode.\"}");
                 try_publish(TOPIC_ALARMS, alarms_buffer);
-                // ===== [END STATE SYNC - NEW] =====
             }
         }
         
-        /* STATE 2 & 3: BATTERY OR GRID REGIME (AI Gated Recovery) */
+        // STATE 2 & 3: BATTERY OR GRID REGIME (AI Gated Recovery)
         else if (system_state == ACT_STATE_BATT || system_state == ACT_STATE_GRID) {
             
-            /* Compute TinyML Features during isolation to double check recovery stability */
+            // Compute TinyML Features during isolation to double check recovery stability
             float features[5];
             features[0] = (current_power - FEATURE_MEAN[0]) / FEATURE_SCALE[0];
             features[1] = (prev_power    - FEATURE_MEAN[1]) / FEATURE_SCALE[1];
@@ -537,7 +514,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
 
             int prediction = smart_battery_predict(features, 5);
             
-            /* Check PV Recovery Condition */
+            // Check PV Recovery Condition
             if (current_power >= PV_THRESHOLD) {
                 recovery_counter++;
                 LOG_INFO("PV Recovery evaluation: %d/3 consecutive cycles.\n", recovery_counter);
@@ -546,15 +523,15 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                 LOG_INFO("Current_power not enough for PV recovery evaluation. Restarting recovery_counter\n");
             }
 
-            /* TRANSITION 2/3 -> 1: PV Restored (Gated by AI Validation) */
+            // TRANSITION 2/3 -> 1: PV Restored (Gated by AI Validation)
             if (recovery_counter >= 3) {
                 
-                /* If the physical threshold is met but AI predicts an imminent drop, abort recovery */
+                // If the physical threshold is met but AI predicts an imminent drop, abort recovery
                 if (prediction == 1) {
                     recovery_counter = 0; 
                     LOG_WARN("PV Recovery aborted! Physical threshold met, but AI predicts imminent drop on next step.\n");
                     
-                    /* Re-evaluate current state configurations immediately */
+                    // Re-evaluate current state configurations immediately
                     if (system_state == ACT_STATE_BATT) {
                         leds_off(LEDS_ALL);
                         leds_single_on(LEDS_YELLOW);
@@ -563,7 +540,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                     }
                 } 
                 else {
-                    /* Safe to switch back to PV Mode */
+                    // Safe to switch back to PV Mode
                     system_state = ACT_STATE_PV;
                     recovery_counter = 0;
                     
@@ -583,10 +560,10 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                 }
             }
             else {
-                /* Evaluate Grid vs Battery */
+                // Evaluate Grid vs Battery
                 if (system_state == ACT_STATE_BATT) {
                     if (current_soc <= CRITICAL_SOC) {
-                        /* TRANSITION 2 -> 3: Battery depleted */
+                        // TRANSITION 2 -> 3: Battery depleted
                         system_state = ACT_STATE_GRID;
                         
                         LOG_INFO(">> STATE 3 ACTIVE: Grid Regime. Battery < 20%%.\n");
@@ -603,22 +580,21 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                         snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"alarm\":\"Battery critical (< 20%%). Switching to National Grid.\"}");
                         try_publish(TOPIC_ALARMS, alarms_buffer);
                     } else {
-                        /* Maintain State 2 */
+                        // Maintain State 2
                         leds_off(LEDS_ALL);
                         leds_single_on(LEDS_YELLOW);
                         snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
                         try_publish(TOPIC_COMMANDS, sensors_buffer);
-                        // ===== [STATE SYNC - NEW] Report current state to keep the Cloud aligned =====
+
                         etimer_set(&spacing_timer, CLOCK_SECOND / 2);
                         PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
                         snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"info\":\"Maintaining Battery Mode.\"}");
                         try_publish(TOPIC_ALARMS, alarms_buffer);
-                        // ===== [END STATE SYNC - NEW] =====
                     }
                 } 
                 else if (system_state == ACT_STATE_GRID) {
 
-                    /* TRANSITION 3 -> 2: Battery magically recharged (CLI Override) */
+                    // TRANSITION 3 -> 2: Battery magically recharged (CLI Override)
                     if (current_soc > CRITICAL_SOC) {
                         system_state = ACT_STATE_BATT;
 
@@ -626,11 +602,11 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                         leds_off(LEDS_ALL);
                         leds_single_on(LEDS_YELLOW);
 
-                        /* Send command to the battery to unlock it from the critical state */
+                        // Send command to the battery to unlock it from the critical state
                         snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"discharge\"}");
                         try_publish(TOPIC_COMMANDS, sensors_buffer);
 
-                        /* Timer to clear the MQTT outbound queue before sending the alarm message */
+                        // Timer to clear the MQTT outbound queue before sending the alarm message
                         etimer_set(&spacing_timer, CLOCK_SECOND / 2);
                         PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
 
@@ -638,24 +614,23 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
                         try_publish(TOPIC_ALARMS, alarms_buffer);
                     } 
                     else {
-                        /* Maintain State 3 */ 
+                        // Maintain State 3
                         leds_off(LEDS_ALL);
                         leds_on(LEDS_RED);
                         snprintf(sensors_buffer, APP_BUFFER_SIZE, "{\"cmd\":\"critical\"}");
                         try_publish(TOPIC_COMMANDS, sensors_buffer);
-                        // ===== [STATE SYNC - NEW] Report current state to keep the Cloud aligned =====
+
                         etimer_set(&spacing_timer, CLOCK_SECOND / 2);
                         PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&spacing_timer));
                         snprintf(alarms_buffer, APP_BUFFER_SIZE, "{\"info\":\"Maintaining National Grid.\"}");
                         try_publish(TOPIC_ALARMS, alarms_buffer);
-                        // ===== [END STATE SYNC - NEW] =====
                     }
                 }
             }
         }
       }
 
-      /* Safe Mode Reaction (Overrides everything to protect the system) */
+      // Safe Mode Reaction (Overrides everything to protect the system)
       if(is_safe_mode) {
         LOG_INFO("SAFE MODE ON: Forcing emergency state.\n");
         
@@ -677,10 +652,7 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
         try_publish(TOPIC_ALARMS, alarms_buffer);
       }
 
-      // ===== [SAFE MODE EXIT - SIMPLIFIED] No explicit recovery publish needed:
-      // on exiting Safe Mode the FSM re-enters a 'maintain' branch which now
-      // publishes its state (info) to the Cloud, so Grafana leaves Safe Mode
-      // automatically. Here we only reset the FSM to a known state. =====
+      // SAFE MODE EXIT
       if(was_safe_mode && !is_safe_mode) {
         system_state = ACT_STATE_PV;
         recovery_counter = 0;
@@ -688,11 +660,10 @@ PROCESS_THREAD(smart_actuator_process, ev, data)
         leds_off(LEDS_ALL);
         leds_on(LEDS_GREEN);
       }
-      // Remember current status for the next cycle.
+      // Remember current status for the next cycle
       was_safe_mode = is_safe_mode;
-      // ===== [END SAFE MODE EXIT - SIMPLIFIED] =====
 
-      /* Update variables for the next cycle */
+      // Update variables for the next cycle
       prev_power = current_power;
       prev_irr = current_irr;
       first_cycle_done = true;
