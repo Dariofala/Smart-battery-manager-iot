@@ -138,14 +138,14 @@ def set_system_state(state_label):
     write_event("state", state_label, state=state_label)
 
 def record_packet(sensor_key, seq):
-    # Updates per-sensor seq window and global msg counter on every telemetry message.
-    # 'seq' may be None (payload without seq): message counted but unusable for PDR.
+    # Updates per-sensor seq window and global msg counter on every telemetry message
     global msg_count_window
     with metrics_lock:
         msg_count_window += 1
         if sensor_key not in seq_state:
             return
         if seq is None:
+            # 'seq' may be None (payload without seq): message counted but unusable for PDR
             seq_state[sensor_key]["received"] += 1
             return
         st = seq_state[sensor_key]
@@ -157,12 +157,12 @@ def record_packet(sensor_key, seq):
 # MQTT MANAGEMENT
 def on_connect(client, userdata, flags, rc, properties):
     log_print(f"[MQTT] Connected to local Mosquitto broker (Code: {rc})")
-    # Subscribes to sensor topics and the registration topic on broker connect.
+    # Subscribes to sensor topics and the registration topic on broker connect
     client.subscribe("network/#")
     client.subscribe("registration")
 
 def on_message(client, userdata, msg):
-    # Drops non-UTF8/corrupted or stale retained payloads.
+    # Drops non-UTF8/corrupted or stale retained payloads
     try:
         payload = msg.payload.decode('utf-8')
     except (UnicodeDecodeError, AttributeError):
@@ -173,7 +173,7 @@ def on_message(client, userdata, msg):
     try:
         data, _ = json.JSONDecoder().raw_decode(payload)
         
-        # MQTT nodes publish {"id": "...", "type": "...", "ip": "..."} at startup.
+        # MQTT nodes publish {"id": "...", "type": "...", "ip": "..."} at startup
         if msg.topic == "registration":
             node_id = data.get("id", "Unknown")
             node_type = data.get("type", "Unknown")
@@ -204,7 +204,7 @@ def on_message(client, userdata, msg):
             elif measurement == "system_state":
                 set_system_state(data.get("vs", "Unknown"))
             
-            # Only real sensor telemetry counts (skip CLI overrides with bn="cli").
+            # Only real sensor telemetry counts (skip CLI overrides with bn="cli")
             sensor_key = BN_TO_KEY.get(device)
             if sensor_key is not None:
                 record_packet(sensor_key, data.get("seq"))
