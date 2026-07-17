@@ -79,8 +79,7 @@ msg_count_window = 0
 # Current congestion status
 is_congested = False
 
-# One lock protects all the counters above, because they are updated from the
-# MQTT background thread (on_message) AND from the asyncio loop (observe_sensor).
+# One lock protects all the counters above, updated both from the MQTT thread and the asyncio loop
 metrics_lock = threading.Lock()
 
 # MQTT nodes that registered their own IPv6, so latency (ping6) can reach them
@@ -171,6 +170,7 @@ def on_message(client, userdata, msg):
 
     # Parses payload as JSON (ignoring residual bytes) and handles registration messages
     try:
+        # raw_decode reads the first valid JSON object, tolerating trailing bytes seen under stress conditions
         data, _ = json.JSONDecoder().raw_decode(payload)
         
         # MQTT nodes publish {"id": "...", "type": "...", "ip": "..."} at startup
@@ -238,14 +238,14 @@ def on_message(client, userdata, msg):
             
     except json.JSONDecodeError:
         log_print(f"[MQTT ERROR] Received non-JSON payload: {payload}")
-    except Exception as e:
+    except Exception as e:  
         log_print(f"[MQTT ERROR] on_message failed on topic '{msg.topic}': {e}")
 
 
 # CoAP CLIENT 
 # CoAP client Context reusable for all the output requests
 coap_client_context = None
-active_observes = {}
+active_observes = {}  # Per-node observe tasks and their IP: {node_id: {'task': ..., 'ip': ...}} 
 
 async def observe_sensor(client_ip, node_id, node_type):
     # Periodically takes telemetry data from a CoAP sensor
@@ -278,6 +278,7 @@ async def observe_sensor(client_ip, node_id, node_type):
                 elif node_type == "irradiation":
                     latest_data["irradiation"] = val
                 
+                # Count CoAP telemetry for PDR and message-count metrics 
                 record_packet(node_type, data.get("seq"))
 
                 # DB Write
@@ -285,12 +286,12 @@ async def observe_sensor(client_ip, node_id, node_type):
             except Exception as e:
                 log_print(f"[CoAP INFLUX ERROR] Failed DB insert: {e}")
             
-    except asyncio.TimeoutError:
+    except asyncio.TimeoutError:  
         log_print(f"[CoAP TIMEOUT] Sensor {node_id} is not responding!")
     except Exception as e:
         log_print(f"[CoAP ERROR] Error on {node_id}: {e}")
     finally:
-        # Safely unregister the observe task
+        # Safely unregister the observe task, comparing task identity so an old task cannot delete a recreated entry 
         current = asyncio.current_task()
         if (node_id in active_observes
                 and active_observes[node_id].get('task') is current):
@@ -337,7 +338,7 @@ class RegistrationResource(resource.Resource):
                     log_print(f"[CoAP RECOVERY] Node {node_id} reconnecting. Cancelling old observe...")
                     old['task'].cancel()
                     try:
-                        await old['task']  # let the old task run its finally to completion
+                        await old['task']  # awaited so teardown completes before recreating the task 
                     except asyncio.CancelledError:
                         pass
                     except Exception:
@@ -478,6 +479,7 @@ def compute_pdr_locked():
             # Fallback for packets without sequence numbers
             per_sensor[k] = 1.0
             continue
+        # Expected packets inferred from the seq gap
         expected = (st["last"] - st["first"]) + 1
         if expected <= 0:
             expected = st["received"]
@@ -543,7 +545,7 @@ async def metrics_monitor(mqtt_client):
         # Determine congestion (low PDR with all nodes actively sending)
         congested_now = (aggregate < PDR_THRESHOLD) and all_alive
 
-        # Update congestion status and notify nodes
+        # Update congestion status and notify nodes every window, so they can also recover when it clears 
         is_congested = congested_now
         write_measurement("metrics", "congestion", 1 if congested_now else 0)
         # to disable adaptive mechanisms comment the next line
