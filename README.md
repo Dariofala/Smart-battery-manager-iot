@@ -29,6 +29,6 @@ A centralized Python-based cloud application manages node registration, network 
 *   **Fail-Safe Mechanisms:** The actuator incorporates a *Safe Mode* that automatically isolates the system and halts the discharge process if critical sensor timeouts or failures occur.
 *   **Compact SenML-inspired Encoding:** All communications use a highly optimized, whitespace-free JSON format to minimize radio transmission payloads.
 
-Group members:
+## Group members:
 - Falaschi Dario
 - Lentini Leonardo
