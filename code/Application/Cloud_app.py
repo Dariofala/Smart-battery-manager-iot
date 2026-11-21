@@ -14,11 +14,11 @@ from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 # INFLUXDB CONFIGURATION
-INFLUX_URL = "http://localhost:8086"
-# INFLUX_TOKEN = ... # Dario
-# INFLUX_TOKEN = ... # Leonardo
-INFLUX_ORG = "myorg"
-INFLUX_BUCKET = "sensors"
+INFLUX_URL = os.environ.get("INFLUX_URL", "http://localhost:8086")
+# Credentials are read from environment variables (see README)
+INFLUX_TOKEN = os.environ.get("INFLUX_TOKEN", "")
+INFLUX_ORG = os.environ.get("INFLUX_ORG", "myorg")
+INFLUX_BUCKET = os.environ.get("INFLUX_BUCKET", "sensors")
 
 client_db = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
 write_api = client_db.write_api(write_options=SYNCHRONOUS)
